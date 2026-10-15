@@ -128,6 +128,74 @@ Semantics notes:
 - The `task` tool (Builder A) invokes `ctx.subagents.run(profile, …)`;
   unknown profile → `error('invalid_args')`.
 
+## Observed-protocol alignment (Cursor 3.4.20)
+
+Source: `docs/cursor-protocol.md` (full spec + evidence ledger). Static
+observation of shipped artifacts only — this section records **what the
+observed protocol does** and **what opencursor still owes**.
+
+### Aligned
+
+| Observed | opencursor |
+|---|---|
+| Per-tool `rejected` / `permission_denied` / `error` triple | `ToolOutcome` union in `protocol/tools.ts` |
+| Exec server→host typed args, host→server typed results, out-of-band abort | runtime tool loop + `AgentEvent` stream |
+| Pre/PostToolUse interception | `hooks/runner.ts` |
+| MCP tools surfaced through the agent tool union | `mcp` tool (`operation: list \| call`) |
+| `TASK_MODE_AGENT` / `TASK_MODE_PLAN` | `SessionMode` + `setMode` + plan-mode gate |
+| `run_in_background` / `subagent_await` / cancel | `SubagentRunner.start/await/cancel/list` |
+| Merkle-diff incremental indexing | `index/` (mtime/hash skip, deleted-file removal) |
+| Model ids never hardcoded; listed from provider | `models/` listing + price catalog |
+
+### Gaps to build (ranked)
+
+1. **Canvas SDK** — the only unimplemented blueprint item. Full typed surface is
+   in `docs/cursor-protocol.md` §3. Build as `packages/core` canvas registry
+   (register/destroy/getUrl, §4) + GUI renderer, with `.canvas.data.json`
+   sidecar persistence for `useCanvasState`. **Design constraints are
+   load-bearing**: tokens only (no hardcoded hex), no gradients/box-shadows,
+   `CardHeader` plain text only, no nested cards.
+2. **Sandbox policy** — observed 4 levels
+   (`UNSPECIFIED`/`INSECURE_NONE`/`WORKSPACE_READWRITE`/`WORKSPACE_READONLY`)
+   plus 12 fields (`network_access`, `additional_readwrite_paths`,
+   `additional_readonly_paths`, `debug_output_dir`, `disable_tmp_write`,
+   `allowlist_escalated`, `enable_shared_build_cache`, `network_policy`,
+   `network_policy_strict`, `capture_denies`, `skip_statsig_defaults`).
+   opencursor has a permission engine but no sandbox layer. Next: model the
+   policy type and enforce `WORKSPACE_READONLY` / path allowlists.
+3. **Mode breadth** — observed 7 `AgentMode` values
+   (`AGENT`/`ASK`/`DEBUG`/`MULTITASK`/`PLAN`/`PROJECT`/`TRIAGE`).
+   opencursor ships `agent` + `plan`. Next: add `ask` (read-only Q&A) and
+   `debug` (hypothesis-driven), which need no new infrastructure.
+4. **Skills** — `AgentSkillMetadata` (name, description, globs, plugin,
+   marketplace, `disable_model_invocation`) + selection literals
+   (`available_skills`, `selected_skills`, `skill_options`). opencursor has
+   memory + subagent profiles but no skill loader. Next: load
+   `SKILL.md`-style directories, inject selected skill bodies, gate on
+   `disable_model_invocation`.
+5. **Subagent type registry** — observed 11 types
+   (`Bash`, `BrowserUse`, `ComputerUse`, `CursorGuide`, `Custom`, `Debug`,
+   `Explore`, `MediaReview`, `Shell`, `VmSetupHelper`, `WatchVideo`).
+   opencursor has `general`/`explore`/`shell`. Next: add `debug` and `bash`
+   aliases; keep custom subagents declarative (plugin/marketplace provenance).
+6. **`apply_patch`** — a model-facing tool literal in the observed set that
+   opencursor does not implement (it has `str_replace` + `edit_file`). Next:
+   add a unified-diff patch tool for multi-hunk edits.
+7. **Hook coverage** — observed also fires on tool **failure**
+   (`PostToolUseFailureRequestQuery`) and before compaction
+   (`PreCompactRequestQuery`). opencursor runs pre/post only. Next: add the
+   failure and pre-compact interception points.
+8. **Conversation-state extras** — observed `file_states map<string,bytes>`,
+   `turn_timings`, `pending_tool_calls[]`, `plan`, `previous_workspace_uris[]`.
+   opencursor persists messages/todos/summary/usage. Next: `file_states` (for
+   change-aware context) and `turn_timings` (for the GUI).
+
+### Non-goals (observed but out of scope)
+
+Cloud VM control plane (`anyrun.v1`, `*.cursorvm-manager.com`), telemetry
+(`api3.cursor.sh/tev1`), the VS Code workbench fork, and server-side prompt
+composition (`root_prompt_messages_json`). opencursor is local-first BYOK.
+
 ## Tests (offline, deterministic)
 
 Acceptance per builder (run from `opencursor/`):
