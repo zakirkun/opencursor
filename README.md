@@ -52,6 +52,16 @@ in the GUI requires a provider — open the **Settings** tab and set one.
 - Rust toolchain (for the Tauri shell)
 - Optional: `rg` (ripgrep) on `PATH` for fast search — set `OPENCURSOR_RIPGREP_PATH` to override
 
+### Known advisory
+
+Dependabot flags a moderate advisory on `glib 0.18.5`
+([GHSA](https://github.com/zakirkun/opencursor/security/dependabot/1)): unsound
+`Iterator` impls in `glib::VariantStrIter` causing potential `NULL` dereferences.
+It is a **Linux-only transitive dependency** of the Tauri GTK stack (`gtk 0.18` →
+`glib ^0.18`); it is not compiled on Windows or macOS builds, and it is not
+remotely reachable. The fix landed in `glib 0.20`, which the current Tauri 2.x
+GTK stack does not yet allow. It will clear with a future Tauri/GTK bump.
+
 ## Model providers
 
 Provider selection order: `config.json` → `OPENCURSOR_PROVIDER` → key auto-detection → none configured.
