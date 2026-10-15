@@ -21,16 +21,16 @@ packages/core           protocol, tools, models, runtime, persistence, memory, i
 
 | Package | Responsibility |
 |---|---|
-| `packages/core` | Protocol contracts, 21 tools, model clients (Anthropic/OpenAI/mock), agent runtime, SQLite persistence, memory, semantic index. Zero runtime dependencies. |
+| `packages/core` | Protocol contracts, 22 builtin tools, model clients (Anthropic/OpenAI), agent runtime, SQLite persistence, memory, semantic index. Zero runtime dependencies. |
 | `packages/server` | HTTP + SSE bridge exposing the runtime to the GUI. Owns the database, MCP connections, background shells, and the index. |
-| `apps/desktop` | Tauri v2 shell (spawns and supervises the server) with a React GUI: chat, tool cards, permission dialogs, todos, sessions, memory, system panel. |
+| `apps/desktop` | Tauri v2 shell (spawns and supervises the server) with a React GUI: chat, tool cards, permission dialogs, todos, sessions, memory, system panel, settings. |
 
 ## Quick start
 
 ```sh
 npm install
 npm run build          # core + server
-npm test               # 86 tests (unit + server end-to-end)
+npm test               # 90 tests (unit + server end-to-end)
 npm run desktop        # launch the desktop GUI (Tauri)
 ```
 
@@ -42,8 +42,9 @@ npm run desktop:server              # server on :4180
 npm --prefix apps/desktop run dev   # GUI dev server (Vite) — open http://localhost:5173/?port=4180
 ```
 
-Without API keys the built-in mock model runs offline, so the full loop is
-exercisable with no network.
+The test suite is fully offline: unit tests use scripted in-test model clients, and
+the server end-to-end test drives a local stub OpenAI-compatible provider. Chatting
+in the GUI requires a provider — open the **Settings** tab and set one.
 
 ## Requirements
 
@@ -53,18 +54,34 @@ exercisable with no network.
 
 ## Model providers
 
-Provider selection order: `config.json` → `OPENCURSOR_PROVIDER` → key auto-detection → `mock`.
+Provider selection order: `config.json` → `OPENCURSOR_PROVIDER` → key auto-detection → none configured.
 
 | Variable | Meaning |
 |---|---|
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic Messages API (streaming) |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI or any OpenAI-compatible endpoint |
-| `OPENCURSOR_PROVIDER` | `anthropic` \| `openai` \| `mock` |
+| `OPENCURSOR_PROVIDER` | `anthropic` \| `openai` |
 | `OPENCURSOR_MODEL` | Model id override |
+
+Model ids are never hardcoded: the server lists them from the provider's `/models`
+endpoint. When no model is chosen, the first listed entry is used. Pricing comes from
+the provider response when the endpoint reports it; otherwise entries are matched
+against the [llm-prices.com](https://llm-prices.com) catalog (cached for 24h at
+`~/.opencursor/prices-cache.json`; `OPENCURSOR_PRICES_URL` overrides the source URL).
+
+### Settings
+
+The GUI **Settings** tab configures provider, API key, base URL, model, max tokens,
+and temperature, and saves them to `~/.opencursor/config.json` through the server.
+"Browse" lists live models from the provider with pricing and a source badge
+(`provider` = reported by the endpoint, `catalog` = llm-prices match); "Refresh
+prices" forces a catalog refetch. API keys are redacted as `'***'` when read back,
+and sending `'***'` on write keeps the stored key unchanged.
 
 ## Tools
 
-The agent has 21 tools: `read_file`, `write_file`, `str_replace`, `edit_file`,
+The agent has 22 builtin tools (plus `mcp` when MCP servers are configured):
+`read_file`, `write_file`, `str_replace`, `edit_file`,
 `delete_file`, `grep_search`, `file_search`, `list_dir`, `run_terminal_cmd`,
 `codebase_search`, `web_search`, `web_fetch`, `update_todos`, `read_todos`,
 `create_plan`, `read_lints`, `task` (subagents), `ask_question`, `memory`, `mcp`,
@@ -171,7 +188,7 @@ Everything lives under `~/.opencursor/` (override with `OPENCURSOR_HOME`):
 
 | Path | Purpose |
 |---|---|
-| `config.json` | settings (provider, model, permissions, memory, MCP, hooks, context) |
+| `config.json` | settings (llm, permissions, memory, MCP, hooks, context) |
 | `opencursor.db` | SQLite: sessions, messages, ops, todos, memories, checkpoints, archives, index (+FTS5) |
 | `memory.json` | JSON mirror of memories |
 | `MEMORY.md` | human-readable digest injected into the system prompt |
@@ -184,8 +201,15 @@ SQLite uses the built-in `node:sqlite` driver (Node >= 22.5) — no native deps.
 ```json
 {
   "version": 1,
-  "provider": null,
-  "model": null,
+  "llm": {
+    "provider": null,
+    "model": null,
+    "api_key": null,
+    "base_url": null,
+    "max_tokens": null,
+    "temperature": null,
+    "embeddings": { "provider": "local", "model": null, "base_url": null, "api_key": null }
+  },
   "permission_mode": "ask",
   "max_iterations": 24,
   "memory": {
@@ -216,7 +240,7 @@ Layout:
 packages/core/src/
   protocol/     frozen wire contracts (tools, session, models, events)
   tools/        one file per tool + registry
-  models/       provider clients + SSE parser + mock
+  models/       provider clients + SSE parser + model listing + price catalog
   runtime/      agent loop, subagent runner
   session/      SQLite + file + memory stores, checkpoints, archives
   permissions/  policy engine

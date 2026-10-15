@@ -28,12 +28,13 @@ npm --prefix apps/desktop install
 
 ## Testing philosophy
 
-Tests are offline and deterministic. The mock model client makes the full agent
-loop exercisable without network. Tests that need infrastructure use the real
-thing against loopback:
+Tests are offline and deterministic. Unit tests drive the agent loop with scripted
+in-test model clients (`ScriptedModel` in `packages/core/test/runtime.test.ts`), so
+no network or API key is needed. Tests that need infrastructure use the real thing
+against loopback:
 
 - `packages/server/test/rpc.test.ts` spawns the actual server on an ephemeral port
-  and drives it over HTTP + SSE.
+  and drives it over HTTP + SSE against a local stub OpenAI-compatible provider.
 - `packages/core/test/mcp.test.ts` spawns a fake MCP server as a child process.
 - `packages/core/test/hooks.test.ts` runs real hook scripts.
 
@@ -75,28 +76,27 @@ Bump `SCHEMA_VERSION` and add guarded `ALTER TABLE` statements for existing
 databases. Never drop columns destructively — the database is the user's session
 history.
 
-## The mock model
+## Testing without network
 
-`packages/core/src/models/mock.ts` is a scripted client keyed off the last user
-message. It is the recommended way to exercise new UI surfaces end to end:
+There is no built-in mock provider. For UI work, point the server at a local stub
+with any OpenAI-compatible shape:
 
-| Prompt contains | Tool call emitted |
-|---|---|
-| `hello` | text reply |
-| `list files` | `list_dir { path: '.' }` |
-| `read package.json` | `read_file` |
-| `run echo` | `run_terminal_cmd { command: 'echo opencursor-mock' }` |
-| `make a plan` | `create_plan` |
-| `grep` / `search for` | `grep_search` |
-| `list mcp` | `mcp { operation: 'list' }` |
-| `ping mcp` | `mcp { operation: 'call', server: 'smoke', tool: 'ping' }` |
+```sh
+OPENCURSOR_HOME=$(mktemp -d) \
+OPENCURSOR_PROVIDER=openai OPENCURSOR_MODEL=stub-model-1 \
+OPENAI_API_KEY=stub-key OPENAI_BASE_URL=http://127.0.0.1:9000/v1 \
+node packages/server/dist/main.js
+```
 
-When the previous message contains a tool result, the mock summarizes it and ends
-the turn — so tool loops terminate cleanly.
+`packages/server/test/rpc.test.ts` contains a ready-made stub provider (models list
++ streaming chat completions) you can copy. `ScriptedModel` in
+`packages/core/test/runtime.test.ts` is the pattern for unit tests: a hand-rolled
+`ModelClient` that yields a fixed sequence of stream events.
 
 ## Debugging
 
 - The server prints its bound port and a ready line; the Tauri shell forwards its
   stdout/stderr as `server-log` events (visible in the devtools console).
 - `OPENCURSOR_HOME` isolates all state — point it at a temp dir for experiments.
-- `OPENCURSOR_PROVIDER=mock` forces the offline model regardless of keys.
+- The GUI **Settings** tab shows the resolved model and provider status; the header
+  displays a warning when no model is configured.

@@ -94,16 +94,17 @@ Semantics notes:
 
 ## Model layer (Builder B)
 
-- `createModelClient` supports `anthropic` (Messages API, streaming SSE), `openai`
-  (Chat Completions, streaming SSE + `tool_calls` deltas), `mock` (deterministic
-  scripted client for tests/offline demo — no network).
+- `createModelClient` supports `anthropic` (Messages API, streaming SSE) and `openai`
+  (Chat Completions, streaming SSE + `tool_calls` deltas). Model ids are never
+  hardcoded: they are listed from the provider's `/models` endpoint.
 - Normalized events per `ModelStreamEvent`. Tool-call args arrive as raw JSON
   fragments; re-assemble per call id and validate JSON before emitting
   `{type:'tool-call'}` (keep `args_raw`).
 - Implement own SSE line parser (no SDK deps); fake-fetch tests must cover
   chunk-split-at-any-byte boundaries, `[DONE]`, and non-JSON keep-alives.
 - Base URLs: `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` respected.
-- `detectModelConfig`: keys → provider; default ids per `DEFAULT_MODELS`.
+- `resolveModelConfig`: `config.json` llm block → env; no model id means first from
+  `/models`. `detectModelConfig` remains as the sync key-based fallback.
 
 ## Runtime semantics (Builder C)
 

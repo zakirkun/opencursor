@@ -15,7 +15,9 @@ import { palette } from './ui/theme.js';
 interface StatusResult {
   cwd: string;
   session_id: string | null;
-  model: { provider: string; id: string };
+  model: { provider: string | null; id: string | null };
+  model_configured: boolean;
+  model_reason: string | null;
   mcp: Array<{ name: string; status: string; tools: Array<{ name: string }>; error?: string }>;
   index: { files: number; chunks: number };
 }
@@ -60,6 +62,15 @@ export function App({ port }: { port: number }) {
       });
     } catch {
       // sidebar refresh failures are non-fatal
+    }
+  }, [client]);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const statusResult = await client.call<StatusResult>('status');
+      setStatus(statusResult);
+    } catch {
+      // status refresh failures surface through the connection indicator
     }
   }, [client]);
 
@@ -224,8 +235,10 @@ export function App({ port }: { port: number }) {
       >
         <span style={{ fontWeight: 700, fontSize: 13, color: palette.accent.primary, letterSpacing: 0.3 }}>opencursor</span>
         {status ? (
-          <span style={{ color: palette.text.tertiary, fontSize: 11 }}>
-            {status.model.provider}:{status.model.id} · {status.cwd}
+          <span style={{ color: status.model_configured ? palette.text.tertiary : palette.status.warn, fontSize: 11 }}>
+            {status.model_configured
+              ? `${status.model.provider ?? '?'}:${status.model.id ?? '?'} · ${status.cwd}`
+              : `no model configured — open Settings${status.model_reason ? ` (${status.model_reason})` : ''}`}
           </span>
         ) : null}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: connected ? palette.status.ok : palette.status.error }}>
@@ -240,6 +253,7 @@ export function App({ port }: { port: number }) {
         </main>
         <SidePanel
           data={{ ...sidebar, sessionId: sessionIdRef.current }}
+          client={client}
           onLoadSession={(id) => void loadSession(id)}
           onNewSession={() => void newSession()}
           onRunIndex={() => void client.call('index.run').then(refreshSidebar)}
@@ -247,6 +261,7 @@ export function App({ port }: { port: number }) {
           onCompact={() => void client.call('context.compact').then(refreshSidebar)}
           onUndo={() => void client.call('checkpoints.undo', { all: false }).then(refreshSidebar)}
           onForgetMemory={(id) => void client.call('memory.forget', { id }).then(refreshSidebar)}
+          onSettingsSaved={() => void refreshStatus()}
         />
       </div>
       {permission ? <PermissionDialog view={permission} onDecision={(decision) => void respondPermission(decision)} /> : null}

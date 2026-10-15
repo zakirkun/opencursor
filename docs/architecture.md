@@ -49,8 +49,17 @@ boundaries splitting any byte sequence, CRLF, comments, and multi-line data.
 
 - `anthropic.ts` — Messages API, streaming, tool-use blocks
 - `openai.ts` — Chat Completions, streaming, `tool_calls` deltas, reasoning fields
-- `mock.ts` — deterministic offline model (scripted tool calls for demos/tests)
-- `index.ts` — `createModelClient`, `detectModelConfig`
+- `listing.ts` — provider model-entry normalization (id/display/context) + pricing parse
+- `prices.ts` — llm-prices.com catalog fetch, 24h cache, fuzzy model matching
+- `index.ts` — `createModelClient`, `resolveModelConfig`, `listModelsWithPrices`
+
+Model configuration flow: `config.json` (`llm` block) is merged over env vars by
+`resolveModelConfig`. When no model id is set, the provider's `/models` endpoint is
+queried and its first entry is used — ids are never hardcoded. `listModelsWithPrices`
+merges pricing: provider-reported values win, otherwise the llm-prices catalog is
+matched. The GUI Settings tab edits the `llm` block through `config.get` /
+`config.set`; `config.set` re-applies the model config and pushes the new client
+into the live runtime via `runtime.setModelClient`.
 
 ### runtime/
 
@@ -99,7 +108,8 @@ A small HTTP server bound to `127.0.0.1` on an ephemeral port (prints
 | `GET /api/events` | SSE stream: agent events, permission requests, question requests |
 | `POST /api/rpc` | `{id, method, params}` → `{id, result}` or `{id, error}` |
 
-RPC methods (see `rpc.ts`): `status`, `session.list/load/new/state`,
+RPC methods (see `rpc.ts`): `status`, `config.get`, `config.set`, `models.list`,
+`models.apply`, `session.list/load/new/state`,
 `chat.send/abort`, `permission.respond`, `question.respond`, `todos`,
 `memory.list/add/forget`, `index.status/run/clear`, `mcp.status`,
 `checkpoints.list/undo`, `context.compact`, `file.read`.
@@ -123,7 +133,7 @@ The React side:
 - `main.tsx` — resolves the port (query param → Tauri `start_server` → fallback) and mounts
 - `lib/client.ts` — typed RPC client + SSE subscription
 - `lib/transcript.ts` — folds server events into renderable items (pure reducer)
-- `ui/` — transcript, tool cards, permission/question dialogs, side panel, primitives
+- `ui/` — transcript, tool cards, permission/question dialogs, side panel (todos, sessions, memory, system, settings), primitives
 - `ui/theme.ts` — semantic design tokens (text/bg/fill/stroke/accent/diff/status)
 
 The GUI never talks to the database directly; every read and write goes through

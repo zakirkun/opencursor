@@ -1,8 +1,10 @@
-/** Side panel — todos, sessions, memory, MCP, index. */
+/** Side panel — todos, sessions, memory, system, settings. */
 
 import { useState } from 'react';
 import { palette } from './theme.js';
 import { Pill } from './primitives.js';
+import { SettingsPanel } from './SettingsPanel.js';
+import type { ServerClient } from '../lib/client.js';
 
 export interface SidebarData {
   todos: Array<{ id: string; content: string; status: string }>;
@@ -15,6 +17,7 @@ export interface SidebarData {
 
 export function SidePanel({
   data,
+  client,
   onLoadSession,
   onNewSession,
   onRunIndex,
@@ -22,8 +25,10 @@ export function SidePanel({
   onCompact,
   onUndo,
   onForgetMemory,
+  onSettingsSaved,
 }: {
   data: SidebarData;
+  client: ServerClient;
   onLoadSession: (id: string) => void;
   onNewSession: () => void;
   onRunIndex: () => void;
@@ -31,13 +36,15 @@ export function SidePanel({
   onCompact: () => void;
   onUndo: () => void;
   onForgetMemory: (id: string) => void;
+  onSettingsSaved: () => void;
 }) {
-  const [tab, setTab] = useState<'todos' | 'sessions' | 'memory' | 'system'>('todos');
+  const [tab, setTab] = useState<'todos' | 'sessions' | 'memory' | 'system' | 'settings'>('todos');
   const tabs: Array<{ id: typeof tab; label: string }> = [
     { id: 'todos', label: `Todos ${data.todos.length > 0 ? `(${data.todos.filter((t) => t.status === 'completed').length}/${data.todos.length})` : ''}` },
     { id: 'sessions', label: 'Sessions' },
     { id: 'memory', label: 'Memory' },
     { id: 'system', label: 'System' },
+    { id: 'settings', label: 'Settings' },
   ];
 
   return (
@@ -50,14 +57,18 @@ export function SidePanel({
             onClick={() => setTab(entry.id)}
             style={{
               flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
               background: 'transparent',
               border: 'none',
               borderBottom: tab === entry.id ? `2px solid ${palette.accent.primary}` : '2px solid transparent',
               color: tab === entry.id ? palette.text.primary : palette.text.tertiary,
-              padding: '8px 4px',
-              fontSize: 11,
+              padding: '8px 2px',
+              fontSize: 10,
               fontWeight: 600,
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
             }}
           >
             {entry.label}
@@ -73,6 +84,7 @@ export function SidePanel({
         {tab === 'system' ? (
           <SystemPanel data={data} onRunIndex={onRunIndex} onClearIndex={onClearIndex} onCompact={onCompact} onUndo={onUndo} />
         ) : null}
+        {tab === 'settings' ? <SettingsPanel client={client} onSaved={onSettingsSaved} /> : null}
       </div>
     </div>
   );
