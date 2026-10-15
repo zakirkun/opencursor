@@ -15,7 +15,8 @@ import { codebaseSearchTool } from './codebase_search.js';
 import { webSearchTool, webFetchTool } from './web.js';
 import { updateTodosTool, readTodosTool } from './todos.js';
 import { createPlanTool, readLintsTool } from './plan.js';
-import { taskTool, askQuestionTool } from './task.js';
+import { taskTool, askQuestionTool, subagentAwaitTool, subagentCancelTool } from './task.js';
+import { switchModeTool } from './switch_mode.js';
 import { memoryTool } from './memory.js';
 import { createMcpTool } from './mcp.js';
 import { writeShellStdinTool, readShellOutputTool } from './shell_stdin.js';
@@ -40,6 +41,9 @@ const BUILTIN: AnyToolHandler[] = [
   createPlanTool,
   readLintsTool,
   taskTool,
+  subagentAwaitTool,
+  subagentCancelTool,
+  switchModeTool,
   askQuestionTool,
   memoryTool,
   writeShellStdinTool,

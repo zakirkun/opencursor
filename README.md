@@ -21,7 +21,7 @@ packages/core           protocol, tools, models, runtime, persistence, memory, i
 
 | Package | Responsibility |
 |---|---|
-| `packages/core` | Protocol contracts, 22 builtin tools, model clients (Anthropic/OpenAI), agent runtime, SQLite persistence, memory, semantic index. Zero runtime dependencies. |
+| `packages/core` | Protocol contracts, 25 builtin tools, model clients (Anthropic/OpenAI), agent runtime with agent/plan modes and background subagents, SQLite persistence, memory, semantic index. Zero runtime dependencies. |
 | `packages/server` | HTTP + SSE bridge exposing the runtime to the GUI. Owns the database, MCP connections, background shells, and the index. |
 | `apps/desktop` | Tauri v2 shell (spawns and supervises the server) with a React GUI: chat, tool cards, permission dialogs, todos, sessions, memory, system panel, settings. |
 
@@ -30,7 +30,7 @@ packages/core           protocol, tools, models, runtime, persistence, memory, i
 ```sh
 npm install
 npm run build          # core + server
-npm test               # 90 tests (unit + server end-to-end)
+npm test               # 96 tests (unit + server end-to-end)
 npm run desktop        # launch the desktop GUI (Tauri)
 ```
 
@@ -80,16 +80,43 @@ and sending `'***'` on write keeps the stored key unchanged.
 
 ## Tools
 
-The agent has 22 builtin tools (plus `mcp` when MCP servers are configured):
+The agent has 25 builtin tools (plus `mcp` when MCP servers are configured):
 `read_file`, `write_file`, `str_replace`, `edit_file`,
 `delete_file`, `grep_search`, `file_search`, `list_dir`, `run_terminal_cmd`,
 `codebase_search`, `web_search`, `web_fetch`, `update_todos`, `read_todos`,
-`create_plan`, `read_lints`, `task` (subagents), `ask_question`, `memory`, `mcp`,
+`create_plan`, `read_lints`, `task` (subagents), `switch_mode`,
+`subagent_await`, `subagent_cancel`, `ask_question`, `memory`, `mcp`,
 `write_shell_stdin`, `read_shell_output`, `index`.
 
 Mutating tools (`write_file`, `str_replace`, `edit_file`, `delete_file`,
 `run_terminal_cmd`, `web_*`, `task`, `mcp` calls) are gated by the permission
 engine before execution. Read-only tools run without prompting.
+
+## Modes
+
+The session runs in one of two modes, mirroring the observed `TASK_MODE_*`
+protocol. Switch from the GUI header or with the `switch_mode` tool.
+
+- **agent** (default) — edits files and runs commands, subject to approval.
+- **plan** — read-only research. File mutation, non-allowlisted shell commands,
+  delegation, MCP, and indexing are refused so a plan can be reviewed first.
+  Read-only shell commands (`git status`, `ls`, …) still run.
+
+The mode persists with the session and is reflected in the system prompt.
+
+## Background subagents
+
+`task` runs a subagent and returns its summary. With `run_in_background: true`
+it returns an agent id immediately; the run continues while the turn proceeds:
+
+```
+task { subagent_type: "explore", prompt: "…", run_in_background: true }  → agent_id
+subagent_await { agent_id }        # wait for completion, returns the summary
+subagent_cancel { agent_id }       # abort the run
+```
+
+Background runs are listed in the GUI System panel and their lifecycle is
+streamed to the transcript as `subagent-started` / `subagent-completed` events.
 
 ## Permissions
 

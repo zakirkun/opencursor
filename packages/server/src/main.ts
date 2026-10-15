@@ -27,7 +27,7 @@ import {
   redactConfig,
   SUBAGENT_PROFILES,
 } from '@opencursor/core';
-import type { AgentRuntime, ModelClient, OpenCursorConfig, PermissionDecision } from '@opencursor/core';
+import type { AgentRuntime, ModelClient, OpenCursorConfig, PermissionDecision, SubagentRunner } from '@opencursor/core';
 import type { ServerContext, RpcRequest } from './types.js';
 import { handleRpc } from './rpc.js';
 
@@ -105,6 +105,26 @@ async function main(): Promise<void> {
   let runtime: AgentRuntime | null = null;
   let runtimeEventsPump: Promise<void> | null = null;
 
+  const requireModelClient = (): ModelClient => {
+    if (!modelClient) {
+      throw new Error(modelReason ?? 'no LLM provider configured');
+    }
+    return modelClient;
+  };
+
+  const delegatingClient: ModelClient = {
+    get provider() {
+      return requireModelClient().provider;
+    },
+    get id() {
+      return requireModelClient().id;
+    },
+    generate: (request) => requireModelClient().generate(request),
+    listModels: () => requireModelClient().listModels(),
+  };
+
+  const subagents: SubagentRunner = createSubagentRunner({ model_client: delegatingClient, tools });
+
   const applyModelConfig = async (): Promise<void> => {
     const resolved = await resolveModelConfig(undefined, config.llm);
     if (!resolved.config) {
@@ -118,19 +138,12 @@ async function main(): Promise<void> {
   };
   await applyModelConfig();
 
-  const requireModelClient = (): ModelClient => {
-    if (!modelClient) {
-      throw new Error(modelReason ?? 'no LLM provider configured');
-    }
-    return modelClient;
-  };
-
-  const subagents = {
-    run: (...args: Parameters<ReturnType<typeof createSubagentRunner>['run']>) =>
-      createSubagentRunner({ model_client: requireModelClient(), tools }).run(...args),
-  };
-
   const sseClients = new Set<ServerResponse>();
+  let pendingMode: 'agent' | 'plan' | null = null;
+  const getPendingMode = (): 'agent' | 'plan' | null => pendingMode;
+  const setPendingMode = (mode: 'agent' | 'plan' | null): void => {
+    pendingMode = mode;
+  };
   const pendingPermissions = new Map<
     string,
     { resolve: (decision: PermissionDecision) => void; tool: string; summary: string; args: unknown }
@@ -152,8 +165,7 @@ async function main(): Promise<void> {
   };
 
   const createRuntime = async (sessionId?: string): Promise<AgentRuntime> => {
-    const created = await createAgentRuntime({
-      cwd,
+    const created = await createAgentRuntime({      cwd,
       model_client: requireModelClient(),
       tools,
       store,
@@ -198,6 +210,11 @@ async function main(): Promise<void> {
       },
     });
     runtime = created;
+    const pending = getPendingMode();
+    if (pending !== null && created.state().mode !== pending) {
+      await created.setMode(pending);
+    }
+    setPendingMode(null);
     return created;
   };
 
@@ -220,6 +237,7 @@ async function main(): Promise<void> {
     mcp,
     indexer,
     tools,
+    subagents,
     getModelClient: () => modelClient,
     modelStatus: () => ({
       configured: modelClient !== null,
@@ -230,6 +248,8 @@ async function main(): Promise<void> {
     applyModelConfig,
     getRuntime: () => runtime,
     createRuntime,
+    getPendingMode,
+    setPendingMode,
     pumpEvents,
     broadcast,
     pendingPermissions,

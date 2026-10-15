@@ -215,6 +215,25 @@ test('server exposes status, sessions, chat, and events end to end', async () =>
     const created = await client.call<{ session_id: string }>('session.new');
     assert.ok(created.session_id.length > 0);
 
+    const modeDefault = await client.call<{ mode: string }>('mode.get');
+    assert.equal(modeDefault.mode, 'agent');
+    const modeSet = await client.call<{ mode: string }>('mode.set', { mode: 'plan', explanation: 'e2e' });
+    assert.equal(modeSet.mode, 'plan');
+    const modeAfter = await client.call<{ state: { mode?: string } }>('session.state');
+    assert.equal(modeAfter.state.mode, 'plan');
+    const modeRestored = await client.call<{ mode: string }>('mode.set', { mode: 'agent' });
+    assert.equal(modeRestored.mode, 'agent');
+    const badMode = await client.call('mode.set', { mode: 'bogus' }).then(
+      () => 'resolved',
+      (error: Error) => error.message,
+    );
+    assert.match(String(badMode), /invalid mode/);
+
+    const subagents = await client.call<{ subagents: Array<{ agent_id: string }> }>('subagents.list');
+    assert.equal(subagents.subagents.length, 0);
+    const cancelUnknown = await client.call<{ cancelled: boolean }>('subagent.cancel', { agent_id: 'missing' });
+    assert.equal(cancelUnknown.cancelled, false);
+
     const eventPromise = waitForEvent(server.port, (message) => {
       if (message['type'] !== 'agent-event') return false;
       const event = message['event'] as Record<string, unknown> | undefined;
@@ -253,6 +272,41 @@ test('server exposes status, sessions, chat, and events end to end', async () =>
       (error: Error) => error.message,
     );
     assert.match(String(unknown), /unknown method/);
+  } finally {
+    if (server) {
+      server.child.kill();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    if (stub) {
+      await new Promise<void>((resolve) => stub.server.close(() => resolve()));
+    }
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('mode chosen before a session exists is applied to the next session', async () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), 'opencursor-srv-'));
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'opencursor-srvcwd-'));
+  let server: { child: ChildProcess; port: number } | null = null;
+  let stub: { server: Server; baseUrl: string } | null = null;
+  try {
+    stub = await startStubProvider();
+    server = await startServer(home, cwd, stub.baseUrl);
+    const client = makeClient(server.port);
+
+    const initial = await client.call<{ session_id: string | null }>('status');
+    assert.equal(initial.session_id, null);
+
+    const set = await client.call<{ mode: string }>('mode.set', { mode: 'plan' });
+    assert.equal(set.mode, 'plan');
+    const reflected = await client.call<{ mode: string }>('mode.get');
+    assert.equal(reflected.mode, 'plan');
+
+    const created = await client.call<{ state: { mode?: string } }>('session.new');
+    assert.equal(created.state.mode, 'plan');
+    const after = await client.call<{ mode: string }>('mode.get');
+    assert.equal(after.mode, 'plan');
   } finally {
     if (server) {
       server.child.kill();

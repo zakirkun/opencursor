@@ -165,6 +165,34 @@ export async function handleRpc(ctx: ServerContext, request: RpcRequest): Promis
       return { todos: runtime ? runtime.state().todos : [] };
     }
 
+    case 'mode.get': {
+      const runtime = ctx.getRuntime();
+      if (runtime) return { mode: runtime.state().mode ?? 'agent' };
+      return { mode: ctx.getPendingMode() ?? 'agent' };
+    }
+
+    case 'mode.set': {
+      const runtime = ctx.getRuntime();
+      const mode = asString(params['mode'], 'mode');
+      if (mode !== 'agent' && mode !== 'plan') throw new Error(`invalid mode: ${mode}`);
+      if (!runtime) {
+        ctx.setPendingMode(mode);
+        return { mode };
+      }
+      const result = await runtime.setMode(mode, asOptionalString(params['explanation']));
+      return result;
+    }
+
+    case 'subagents.list': {
+      const handles = ctx.subagents.list();
+      return { subagents: handles };
+    }
+
+    case 'subagent.cancel': {
+      const agentId = asString(params['agent_id'], 'agent_id');
+      return ctx.subagents.cancel(agentId, asOptionalString(params['reason']));
+    }
+
     case 'memory.list': {
       const query = asOptionalString(params['query']);
       const limit = typeof params['limit'] === 'number' ? params['limit'] : 50;

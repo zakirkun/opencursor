@@ -360,3 +360,160 @@ test('todo updates flow through events and session state', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('mode defaults to agent and setMode emits mode-changed and persists', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
+  try {
+    const model = new ScriptedModel([{ text: 'hi', stop: 'end_turn' }]);
+    const runtime = await createAgentRuntime(runtimeDeps({ dir, model, tools: [echoTool()] }));
+    const events = await collectEvents(runtime);
+    assert.equal(runtime.state().mode, 'agent');
+
+    const result = await runtime.setMode('plan', 'research first');
+    assert.equal(result.mode, 'plan');
+    assert.equal(runtime.state().mode, 'plan');
+    assert.ok(events.some((event) => event.type === 'mode-changed' && event.mode === 'plan'));
+
+    const reloaded = await createAgentRuntime({
+      ...runtimeDeps({ dir, model, tools: [echoTool()] }),
+      session_id: runtime.session_id,
+    });
+    assert.equal(reloaded.state().mode, 'plan');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('plan mode blocks mutation, delegation, and unsafe commands', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
+  try {
+    const writeTool: AnyToolHandler = {
+      name: 'write_file',
+      description: 'fake writer',
+      input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      default_permission: 'allow',
+      async execute() {
+        return ok({ path: 'x.ts', bytes_written: 1 });
+      },
+    };
+    const shellTool: AnyToolHandler = {
+      name: 'run_terminal_cmd',
+      description: 'fake shell',
+      input_schema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      default_permission: 'allow',
+      async execute(args: { command: string }) {
+        return ok({
+          command: args.command,
+          stdout: 'ok',
+          stderr: '',
+          exit_code: 0,
+          duration_ms: 1,
+          backgrounded: false,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        });
+      },
+    };
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'x.ts' } }], stop: 'tool_use' },
+      { toolCalls: [{ id: 'c2', name: 'run_terminal_cmd', args: { command: 'npm install left-pad' } }], stop: 'tool_use' },
+      { toolCalls: [{ id: 'c3', name: 'run_terminal_cmd', args: { command: 'git status' } }], stop: 'tool_use' },
+      { text: 'done', stop: 'end_turn' },
+    ]);
+    const runtime = await createAgentRuntime(runtimeDeps({ dir, model, tools: [writeTool, shellTool] }));
+    const events = await collectEvents(runtime);
+    await runtime.setMode('plan');
+    const summary = await runtime.runTurn('plan it');
+    await waitForTurn(runtime, Promise.resolve(summary), events);
+
+    const completed = events.filter((event) => event.type === 'tool-call-completed');
+    const outcomes = completed.map((event) => (event.type === 'tool-call-completed' ? event.outcome : null));
+    assert.equal(outcomes[0]?.kind, 'rejected');
+    assert.match(String((outcomes[0] as { reason?: string }).reason), /plan mode/);
+    assert.equal(outcomes[1]?.kind, 'rejected');
+    assert.equal(outcomes[2]?.kind, 'success');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('switch_mode tool flips the session mode', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
+  try {
+    const { switchModeTool } = await import('../src/tools/switch_mode.js');
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: 'c1', name: 'switch_mode', args: { mode: 'plan' } }], stop: 'tool_use' },
+      { text: 'planning', stop: 'end_turn' },
+    ]);
+    const runtime = await createAgentRuntime(runtimeDeps({ dir, model, tools: [switchModeTool as unknown as AnyToolHandler] }));
+    const events = await collectEvents(runtime);
+    const summary = await runtime.runTurn('switch to plan');
+    await waitForTurn(runtime, Promise.resolve(summary), events);
+    assert.equal(runtime.state().mode, 'plan');
+    assert.ok(events.some((event) => event.type === 'mode-changed'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('background subagent starts, awaits, and reports completion', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
+  try {
+    const { createSubagentRunner, SUBAGENT_PROFILES } = await import('../src/runtime/subagents.js');
+    const childModel = new ScriptedModel([{ text: 'child findings', stop: 'end_turn' }]);
+    const runner = createSubagentRunner({ model_client: childModel, tools: createRegistry([echoTool()]) });
+
+    const handle = runner.start(SUBAGENT_PROFILES.explore, 'look around', {
+      cwd: dir,
+      parent_session_id: 'parent',
+      description: 'recon',
+    });
+    assert.equal(handle.status, 'running');
+    assert.ok(runner.list().some((entry) => entry.agent_id === handle.agent_id));
+
+    const awaited = await runner.await(handle.agent_id, 10_000);
+    assert.equal(awaited.status, 'completed');
+    assert.equal(awaited.subagent_type, 'explore');
+    assert.match(String(awaited.summary), /child findings/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('background subagent cancel marks it cancelled', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
+  try {
+    const { createSubagentRunner, SUBAGENT_PROFILES } = await import('../src/runtime/subagents.js');
+    const hangingModel: ModelClient = {
+      provider: 'openai',
+      id: 'hang',
+      async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 5000);
+          request.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(new Error('aborted'));
+            },
+            { once: true },
+          );
+        });
+        yield { type: 'stop', reason: 'end_turn' };
+      },
+    };
+    const runner = createSubagentRunner({ model_client: hangingModel, tools: createRegistry([echoTool()]) });
+    const handle = runner.start(SUBAGENT_PROFILES.explore, 'hang', {
+      cwd: dir,
+      parent_session_id: 'parent',
+      description: 'hang',
+    });
+    const cancelled = runner.cancel(handle.agent_id);
+    assert.equal(cancelled.cancelled, true);
+    const awaited = await runner.await(handle.agent_id, 5000);
+    assert.equal(awaited.status, 'cancelled');
+    assert.equal(runner.cancel('missing-id').cancelled, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

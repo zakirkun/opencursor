@@ -3,8 +3,8 @@
  * Mirrors the observed client-visible update family.
  */
 
-import type { ModelToolCallRecord, TodoItem, TurnSummary } from './session.js';
-import type { ToolOutcome } from './tools.js';
+import type { ModelToolCallRecord, SessionMode, TodoItem, TurnSummary } from './session.js';
+import type { SubagentStatus, ToolOutcome } from './tools.js';
 
 export interface PermissionRequestView {
   tool: string;
@@ -25,6 +25,9 @@ export type AgentEvent =
   | { type: 'permission-requested'; request: PermissionRequestView }
   | { type: 'permission-resolved'; call_id: string; decision: 'allow' | 'allow_always' | 'deny' }
   | { type: 'todos-updated'; todos: TodoItem[] }
+  | { type: 'mode-changed'; mode: SessionMode; explanation?: string }
+  | { type: 'subagent-started'; agent_id: string; subagent_type: string; description: string }
+  | { type: 'subagent-completed'; agent_id: string; subagent_type: string; status: SubagentStatus; summary?: string }
   | { type: 'step-completed'; step_index: number }
   | { type: 'hook-result'; phase: 'pre' | 'post'; tool: string; decision: 'allow' | 'deny' | 'error'; reason?: string }
   | { type: 'checkpoint-created'; checkpoint_id: string; path: string; tool: string }

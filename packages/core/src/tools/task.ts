@@ -1,14 +1,14 @@
-/** task + ask_question — delegation and interactive question surfaces. */
+/** task + ask_question — delegation, background subagents, interactive question surfaces. */
 
 import type { ToolHandlerFor } from '../types.js';
-import type { AskQuestionSuccess, TaskSuccess } from '../protocol/tools.js';
+import type { AskQuestionSuccess, SubagentAwaitSuccess, SubagentCancelSuccess, TaskSuccess } from '../protocol/tools.js';
 import { err, ok } from '../protocol/tools.js';
 
 export const taskTool: ToolHandlerFor<'task'> = {
   name: 'task',
   description:
     'Delegate a scoped job to a subagent (general | explore | shell). The subagent runs with a ' +
-    'restricted toolset and returns a summary. Use for parallel exploration or long command sequences.',
+    'restricted toolset and returns a summary. Use run_in_background for long jobs, then subagent_await.',
   input_schema: {
     type: 'object',
     properties: {
@@ -16,6 +16,7 @@ export const taskTool: ToolHandlerFor<'task'> = {
       prompt: { type: 'string', description: 'Full, self-contained instructions for the subagent' },
       subagent_type: { type: 'string', description: 'general | explore | shell' },
       model: { type: 'string', description: 'Optional model override' },
+      run_in_background: { type: 'boolean', description: 'Return an agent id immediately instead of waiting' },
     },
     required: ['description', 'prompt', 'subagent_type'],
   },
@@ -29,6 +30,21 @@ export const taskTool: ToolHandlerFor<'task'> = {
     if (!profile) {
       const available = Object.keys(profiles).join(', ') || 'none';
       return err('invalid_args', `unknown subagent_type '${args.subagent_type}'; available: ${available}`);
+    }
+
+    if (args.run_in_background === true) {
+      const handle = ctx.subagents.start(profile, args.prompt, {
+        cwd: ctx.cwd,
+        parent_session_id: ctx.session_id,
+        description: args.description,
+      });
+      const value: TaskSuccess = {
+        summary: `subagent ${handle.agent_id} started in the background`,
+        subagent_type: args.subagent_type,
+        agent_id: handle.agent_id,
+        background: true,
+      };
+      return ok(value);
     }
 
     const result = await ctx.subagents.run(profile, args.prompt, {
@@ -45,6 +61,47 @@ export const taskTool: ToolHandlerFor<'task'> = {
       return ok(value);
     }
     return result;
+  },
+};
+
+export const subagentAwaitTool: ToolHandlerFor<'subagent_await'> = {
+  name: 'subagent_await',
+  description:
+    'Wait for a background subagent (started with task run_in_background) to finish and return its summary.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_id: { type: 'string', description: 'Agent id returned by the task tool' },
+      timeout_ms: { type: 'number', description: 'Optional bound; returns running status when exceeded' },
+    },
+    required: ['agent_id'],
+  },
+  default_permission: 'allow',
+  async execute(args, ctx) {
+    if (!ctx.subagents) return err('internal', 'subagent runner not attached');
+    if (!args.agent_id || args.agent_id.trim().length === 0) return err('invalid_args', 'agent_id is required');
+    const value: SubagentAwaitSuccess = await ctx.subagents.await(args.agent_id, args.timeout_ms);
+    return ok(value);
+  },
+};
+
+export const subagentCancelTool: ToolHandlerFor<'subagent_cancel'> = {
+  name: 'subagent_cancel',
+  description: 'Cancel a running background subagent and stop its work.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      agent_id: { type: 'string', description: 'Agent id returned by the task tool' },
+      reason: { type: 'string', description: 'Optional reason recorded for the user' },
+    },
+    required: ['agent_id'],
+  },
+  default_permission: 'allow',
+  async execute(args, ctx) {
+    if (!ctx.subagents) return err('internal', 'subagent runner not attached');
+    if (!args.agent_id || args.agent_id.trim().length === 0) return err('invalid_args', 'agent_id is required');
+    const value: SubagentCancelSuccess = ctx.subagents.cancel(args.agent_id, args.reason);
+    return ok(value);
   },
 };
 

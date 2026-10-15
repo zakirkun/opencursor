@@ -21,7 +21,6 @@ interface StatusResult {
   mcp: Array<{ name: string; status: string; tools: Array<{ name: string }>; error?: string }>;
   index: { files: number; chunks: number };
 }
-
 const EMPTY_SIDEBAR: SidebarData = {
   todos: [],
   sessions: [],
@@ -41,6 +40,7 @@ export function App({ port }: { port: number }) {
   const [permission, setPermission] = useState<PermissionView | null>(null);
   const [question, setQuestion] = useState<QuestionView | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'agent' | 'plan'>('agent');
   const sessionIdRef = useRef<string | null>(null);
 
   const refreshSidebar = useCallback(async () => {
@@ -74,6 +74,23 @@ export function App({ port }: { port: number }) {
     }
   }, [client]);
 
+  const switchMode = useCallback(
+    async (next: 'agent' | 'plan') => {
+      const previous = mode;
+      setMode(next);
+      try {
+        await client.call('mode.set', { mode: next });
+      } catch (error) {
+        setMode(previous);
+        setItems((current) => [
+          ...current,
+          { kind: 'notice', id: `merr-${Date.now()}`, tone: 'error', text: error instanceof Error ? error.message : String(error) },
+        ]);
+      }
+    },
+    [client, mode],
+  );
+
   useEffect(() => {
     let disposed = false;
     const connect = async (): Promise<void> => {
@@ -85,9 +102,10 @@ export function App({ port }: { port: number }) {
         setConnectionError(null);
         sessionIdRef.current = statusResult.session_id;
         if (statusResult.session_id) {
-          const state = await client.call<{ state: { messages: Array<Record<string, unknown>> } | null }>('session.state');
+          const state = await client.call<{ state: { messages: Array<Record<string, unknown>>; mode?: string } | null }>('session.state');
           if (state.state) {
             setItems(seedFromState(state.state.messages));
+            setMode(state.state.mode === 'plan' ? 'plan' : 'agent');
           }
         } else {
           const created = await client.call<{ session_id: string }>('session.new');
@@ -196,9 +214,10 @@ export function App({ port }: { port: number }) {
   const loadSession = useCallback(
     async (id: string) => {
       try {
-        const loaded = await client.call<{ state: { messages: Array<Record<string, unknown>> } }>('session.load', { session_id: id });
+        const loaded = await client.call<{ state: { messages: Array<Record<string, unknown>>; mode?: string } }>('session.load', { session_id: id });
         sessionIdRef.current = id;
         setItems(seedFromState(loaded.state.messages));
+        setMode(loaded.state.mode === 'plan' ? 'plan' : 'agent');
         await refreshSidebar();
       } catch (error) {
         setItems((current) => [
@@ -215,6 +234,7 @@ export function App({ port }: { port: number }) {
       const created = await client.call<{ session_id: string }>('session.new');
       sessionIdRef.current = created.session_id;
       setItems([]);
+      setMode('agent');
       await refreshSidebar();
     } catch {
       // ignore
@@ -234,6 +254,27 @@ export function App({ port }: { port: number }) {
         }}
       >
         <span style={{ fontWeight: 700, fontSize: 13, color: palette.accent.primary, letterSpacing: 0.3 }}>opencursor</span>
+        <div style={{ display: 'flex', border: `1px solid ${palette.stroke.primary}`, borderRadius: 6, overflow: 'hidden' }}>
+          {(['agent', 'plan'] as const).map((entry) => (
+            <button
+              key={entry}
+              type="button"
+              onClick={() => void switchMode(entry)}
+              title={entry === 'plan' ? 'read-only research mode' : 'edit and run commands'}
+              style={{
+                background: mode === entry ? palette.accent.control : 'transparent',
+                color: mode === entry ? palette.text.primary : palette.text.tertiary,
+                border: 'none',
+                padding: '3px 10px',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {entry}
+            </button>
+          ))}
+        </div>
         {status ? (
           <span style={{ color: status.model_configured ? palette.text.tertiary : palette.status.warn, fontSize: 11 }}>
             {status.model_configured

@@ -28,7 +28,8 @@ export type TranscriptItem =
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
   | { kind: 'reasoning'; id: string; text: string }
   | { kind: 'tool'; id: string; call: ToolCallView }
-  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'warn' | 'error' };
+  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'warn' | 'error' }
+  | { kind: 'subagent'; id: string; agentId: string; subagentType: string; description: string; status: string; summary?: string };
 
 let seq = 0;
 const nextId = (): string => `item-${++seq}`;
@@ -109,6 +110,54 @@ export function applyServerMessage(items: TranscriptItem[], message: unknown): T
           },
         };
       });
+    }
+    case 'todos-updated':
+      return items;
+    case 'mode-changed':
+      return [
+        ...items,
+        {
+          kind: 'notice',
+          id: nextId(),
+          tone: 'info',
+          text: `mode: ${String(e['mode'])}${e['explanation'] ? ` — ${String(e['explanation'])}` : ''}`,
+        },
+      ];
+    case 'subagent-started':
+      return [
+        ...items,
+        {
+          kind: 'subagent',
+          id: nextId(),
+          agentId: String(e['agent_id'] ?? ''),
+          subagentType: String(e['subagent_type'] ?? 'general'),
+          description: String(e['description'] ?? ''),
+          status: 'running',
+        },
+      ];
+    case 'subagent-completed': {
+      const agentId = String(e['agent_id'] ?? '');
+      const status = String(e['status'] ?? 'completed');
+      const summary = typeof e['summary'] === 'string' ? e['summary'] : undefined;
+      let matched = false;
+      const updated = items.map((item) => {
+        if (item.kind !== 'subagent' || item.agentId !== agentId) return item;
+        matched = true;
+        return summary === undefined ? { ...item, status } : { ...item, status, summary };
+      });
+      if (matched) return updated;
+      return [
+        ...items,
+        {
+          kind: 'subagent',
+          id: nextId(),
+          agentId,
+          subagentType: String(e['subagent_type'] ?? 'general'),
+          description: '',
+          status,
+          ...(summary === undefined ? {} : { summary }),
+        },
+      ];
     }
     case 'hook-result':
       return [

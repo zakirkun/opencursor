@@ -15,6 +15,11 @@ const HARD_DENY = [
 
 const SAFE_COMMAND = /^(ls|dir|pwd|cd|cat|head|tail|wc|rg|findstr|type|tree|git (status|diff|log|branch|show)|node --version|npm (test|run|--version)|pnpm (test|run|--version)|yarn (test|run|--version)|echo|whoami|hostname|where|which)\b/i;
 
+/** True when a shell command is on the read-only allowlist (used by plan-mode gating). */
+export function isSafeCommand(command: string): boolean {
+  return SAFE_COMMAND.test(command.trim());
+}
+
 const READ_FAMILY = new Set([
   'read_file',
   'grep_search',

@@ -13,6 +13,7 @@ interface SessionRow {
   model_id: string;
   usage_json: string;
   summary_json: string | null;
+  mode: string | null;
 }
 
 interface MessageRow {
@@ -25,15 +26,16 @@ interface TodoRow {
 
 export function createSqliteSessionStore(db: DatabaseSync): SessionStore {
   const upsertSession = db.prepare(
-    `INSERT INTO sessions (id, created_at, updated_at, cwd, model_provider, model_id, usage_json, summary_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO sessions (id, created_at, updated_at, cwd, model_provider, model_id, usage_json, summary_json, mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        updated_at = excluded.updated_at,
        cwd = excluded.cwd,
        model_provider = excluded.model_provider,
        model_id = excluded.model_id,
        usage_json = excluded.usage_json,
-       summary_json = excluded.summary_json`,
+       summary_json = excluded.summary_json,
+       mode = excluded.mode`,
   );
   const deleteMessages = db.prepare('DELETE FROM messages WHERE session_id = ?');
   const insertMessage = db.prepare(
@@ -72,6 +74,7 @@ export function createSqliteSessionStore(db: DatabaseSync): SessionStore {
         updated_at: row.updated_at,
         cwd: row.cwd,
         model: { provider: row.model_provider, id: row.model_id },
+        mode: row.mode === 'plan' ? 'plan' : 'agent',
         messages: messages as SessionState['messages'],
         todos: todos as SessionState['todos'],
         usage,
@@ -97,6 +100,7 @@ export function createSqliteSessionStore(db: DatabaseSync): SessionStore {
         state.model.id,
         JSON.stringify(state.usage),
         state.summary ? JSON.stringify(state.summary) : null,
+        state.mode ?? 'agent',
       );
       deleteMessages.run(state.id);
       state.messages.forEach((message, index) => {

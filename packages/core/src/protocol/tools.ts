@@ -171,6 +171,23 @@ export interface TaskArgs {
   resume?: string;
   agent_id?: string;
   attachments?: string[];
+  /** Run detached: returns an agent id immediately; await with subagent_await. */
+  run_in_background?: boolean;
+}
+
+export interface SwitchModeArgs {
+  mode: 'agent' | 'plan';
+  explanation?: string;
+}
+
+export interface SubagentAwaitArgs {
+  agent_id: string;
+  timeout_ms?: number;
+}
+
+export interface SubagentCancelArgs {
+  agent_id: string;
+  reason?: string;
 }
 
 export interface BrainstormArgs {
@@ -322,6 +339,27 @@ export interface TaskSuccess {
   summary: string;
   subagent_type: string;
   conversation_id?: string;
+  agent_id?: string;
+  background?: boolean;
+}
+
+export interface SwitchModeSuccess {
+  mode: 'agent' | 'plan';
+  explanation?: string;
+}
+
+export type SubagentStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface SubagentAwaitSuccess {
+  agent_id: string;
+  subagent_type: string;
+  status: SubagentStatus;
+  summary?: string;
+}
+
+export interface SubagentCancelSuccess {
+  agent_id: string;
+  cancelled: boolean;
 }
 
 export interface BrainstormSuccess {
@@ -458,6 +496,9 @@ export type ToolCall =
   | ToolCallBase<'create_plan', CreatePlanArgs>
   | ToolCallBase<'read_lints', ReadLintsToolArgs>
   | ToolCallBase<'task', TaskArgs>
+  | ToolCallBase<'switch_mode', SwitchModeArgs>
+  | ToolCallBase<'subagent_await', SubagentAwaitArgs>
+  | ToolCallBase<'subagent_cancel', SubagentCancelArgs>
   | ToolCallBase<'brainstorm', BrainstormArgs>
   | ToolCallBase<'memory', MemoryArgs>
   | ToolCallBase<'mcp', McpArgs>
@@ -485,6 +526,9 @@ export interface ToolResultValues {
   create_plan: PlanSuccess;
   read_lints: LintSuccess;
   task: TaskSuccess;
+  switch_mode: SwitchModeSuccess;
+  subagent_await: SubagentAwaitSuccess;
+  subagent_cancel: SubagentCancelSuccess;
   brainstorm: BrainstormSuccess;
   memory: MemoryResult;
   mcp: McpToolResult;

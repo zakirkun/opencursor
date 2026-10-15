@@ -22,6 +22,7 @@ export type { LlmSettings, ResolvedLlm, ListedModel } from './models/index.js';
 export type { PriceCatalog, PriceCatalogEntry } from './models/index.js';
 export { createFileSessionStore, createMemorySessionStore, createSqliteSessionStore, createCheckpointStore, createArchiveStore } from './session/index.js';
 export type { CheckpointStore, CheckpointRecord, MessageArchiveStore, MessageArchiveInfo } from './session/index.js';
+export type { SubagentHandle, SubagentRunner, ModeAccessor } from './types.js';
 export { createShellRegistry } from './shells/registry.js';
 export type { ShellRegistry, BackgroundShellInfo, BackgroundShellSnapshot } from './shells/registry.js';
 export {

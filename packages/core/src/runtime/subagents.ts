@@ -1,10 +1,7 @@
 /** Subagent profiles and child-runtime runner. */
 
-import type {
-  SubagentProfile,
-  SubagentRunner,
-  ToolRegistry,
-} from '../types.js';
+import { randomUUID } from 'node:crypto';
+import type { SubagentHandle, SubagentProfile, SubagentRunner, ToolRegistry } from '../types.js';
 import type { ModelClient } from '../protocol/models.js';
 import type { ToolName } from '../protocol/tools.js';
 import { createAgentRuntime } from './runtime.js';
@@ -76,58 +73,171 @@ export function createSubagentRunner(deps: {
   tools: ToolRegistry;
   max_iterations?: number;
 }): SubagentRunner {
+  const handles = new Map<string, SubagentHandle>();
+  const controllers = new Map<string, AbortController>();
+  const waiters = new Map<string, Array<() => void>>();
+
+  const settle = (agentId: string): void => {
+    const pending = waiters.get(agentId);
+    if (!pending) return;
+    waiters.delete(agentId);
+    for (const notify of pending) notify();
+  };
+
+  const runChild = async (
+    profile: SubagentProfile,
+    prompt: string,
+    opts: { cwd: string; signal?: AbortSignal },
+  ): Promise<{ ok: true; summary: string; conversationId: string } | { ok: false; message: string; cancelled: boolean }> => {
+    const childRegistry = filterRegistry(deps.tools, profile.tools);
+    const childStore = createMemorySessionStore();
+    const childShells = createShellRegistry();
+    const childRuntime = await createAgentRuntime({
+      cwd: opts.cwd,
+      model_client: deps.model_client,
+      tools: childRegistry,
+      store: childStore,
+      permissions: createPermissionPolicy({ mode: 'yolo' }),
+      system_prompt: profile.system_prompt,
+      max_iterations: profile.max_iterations ?? deps.max_iterations ?? 12,
+      subagent_profiles: { [profile.name]: profile },
+      shells: childShells,
+    });
+
+    const abortListener = (): void => childRuntime.abort();
+    opts.signal?.addEventListener('abort', abortListener, { once: true });
+
+    const eventsPromise = (async () => {
+      for await (const _event of childRuntime.events()) {
+        if (opts.signal?.aborted) break;
+      }
+    })();
+
+    try {
+      await childRuntime.runTurn(prompt);
+      const summaryState = childRuntime.state();
+      const lastAssistant = [...summaryState.messages]
+        .reverse()
+        .find((message) => message.role === 'assistant');
+      const summaryText =
+        lastAssistant && lastAssistant.role === 'assistant' && lastAssistant.text.trim().length > 0
+          ? lastAssistant.text.trim()
+          : '(subagent produced no text output)';
+      return { ok: true, summary: summaryText.slice(0, 2000), conversationId: summaryState.id };
+    } catch (error) {
+      return { ok: false, message: `subagent failed: ${String(error)}`, cancelled: opts.signal?.aborted === true };
+    } finally {
+      opts.signal?.removeEventListener('abort', abortListener);
+      childRuntime.abort();
+      childShells.killAll();
+      void eventsPromise.catch(() => undefined);
+    }
+  };
+
+  const requireHandle = (agentId: string): SubagentHandle | null => handles.get(agentId) ?? null;
+
   return {
     async run(profile, prompt, ctx) {
-      const childRegistry = filterRegistry(deps.tools, profile.tools);
-      const childStore = createMemorySessionStore();
-      const childShells = createShellRegistry();
-      const childRuntime = await createAgentRuntime({
+      const result = await runChild(profile, prompt, {
         cwd: ctx.cwd,
-        model_client: deps.model_client,
-        tools: childRegistry,
-        store: childStore,
-        permissions: createPermissionPolicy({ mode: 'yolo' }),
-        system_prompt: profile.system_prompt,
-        max_iterations: profile.max_iterations ?? deps.max_iterations ?? 12,
-        subagent_profiles: { [profile.name]: profile },
-        shells: childShells,
+        signal: ctx.signal,
       });
-
-      const abortListener = (): void => childRuntime.abort();
-      ctx.signal.addEventListener('abort', abortListener, { once: true });
-
-      const eventsPromise = (async () => {
-        for await (const _event of childRuntime.events()) {
-          if (ctx.signal.aborted) break;
-        }
-      })();
-
-      try {
-        await childRuntime.runTurn(prompt);
-        const summaryState = childRuntime.state();
-        const lastAssistant = [...summaryState.messages]
-          .reverse()
-          .find((message) => message.role === 'assistant');
-        const summaryText =
-          lastAssistant && lastAssistant.role === 'assistant' && lastAssistant.text.trim().length > 0
-            ? lastAssistant.text.trim()
-            : '(subagent produced no text output)';
+      if (result.ok) {
         return {
           kind: 'success' as const,
           value: {
-            summary: summaryText.slice(0, 2000),
+            summary: result.summary,
             subagent_type: profile.name,
-            conversation_id: summaryState.id,
+            conversation_id: result.conversationId,
           },
         };
-      } catch (error) {
-        return { kind: 'error' as const, code: 'internal' as const, message: `subagent failed: ${String(error)}` };
-      } finally {
-        ctx.signal.removeEventListener('abort', abortListener);
-        childRuntime.abort();
-        childShells.killAll();
-        void eventsPromise.catch(() => undefined);
       }
+      return { kind: 'error' as const, code: 'internal' as const, message: result.message };
+    },
+
+    start(profile, prompt, ctx) {
+      const agentId = randomUUID();
+      const handle: SubagentHandle = {
+        agent_id: agentId,
+        subagent_type: profile.name,
+        description: ctx.description,
+        status: 'running',
+        started_at: new Date().toISOString(),
+      };
+      handles.set(agentId, handle);
+      const controller = new AbortController();
+      controllers.set(agentId, controller);
+
+      void runChild(profile, prompt, {
+        cwd: ctx.cwd,
+        signal: controller.signal,
+      }).then((result) => {
+        const current = handles.get(agentId);
+        if (!current) return;
+        if (current.status === 'running') {
+          if (result.ok) {
+            current.status = 'completed';
+            current.summary = result.summary;
+          } else if (result.cancelled) {
+            current.status = 'cancelled';
+          } else {
+            current.status = 'failed';
+            current.summary = result.message;
+          }
+          current.ended_at = new Date().toISOString();
+        }
+        controllers.delete(agentId);
+        settle(agentId);
+      });
+
+      return handle;
+    },
+
+    async await(agentId, timeoutMs) {
+      const handle = requireHandle(agentId);
+      if (!handle) {
+        return { agent_id: agentId, subagent_type: 'unknown', status: 'failed' as const, summary: 'unknown agent id' };
+      }
+      if (handle.status === 'running') {
+        await new Promise<void>((resolve) => {
+          const pending = waiters.get(agentId) ?? [];
+          pending.push(resolve);
+          waiters.set(agentId, pending);
+          if (timeoutMs !== undefined && timeoutMs > 0) {
+            setTimeout(() => {
+              const list = waiters.get(agentId);
+              if (list) {
+                waiters.set(
+                  agentId,
+                  list.filter((entry) => entry !== resolve),
+                );
+              }
+              resolve();
+            }, timeoutMs).unref?.();
+          }
+        });
+      }
+      const final = requireHandle(agentId) ?? handle;
+      return final.summary === undefined
+        ? { agent_id: agentId, subagent_type: final.subagent_type, status: final.status }
+        : { agent_id: agentId, subagent_type: final.subagent_type, status: final.status, summary: final.summary };
+    },
+
+    cancel(agentId) {
+      const handle = requireHandle(agentId);
+      if (!handle) return { agent_id: agentId, cancelled: false };
+      if (handle.status === 'running') {
+        controllers.get(agentId)?.abort();
+        controllers.delete(agentId);
+        handle.status = 'cancelled';
+        handle.ended_at = new Date().toISOString();
+        settle(agentId);
+      }
+      return { agent_id: agentId, cancelled: true };
+    },
+
+    list() {
+      return [...handles.values()].sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
     },
   };
 }

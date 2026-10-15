@@ -9,6 +9,7 @@ import type {
   AssistantMessage,
   CheckpointInfo,
   ModelToolCallRecord,
+  SessionMode,
   SessionState,
   TodoItem,
   ToolResultMessage,
@@ -17,11 +18,37 @@ import type {
 } from '../protocol/session.js';
 import type { ToolContext, AgentRuntime, AgentRuntimeConfig } from '../types.js';
 import { DEFAULT_LIMITS } from '../types.js';
-import type { PlanSuccess, ToolName, ToolOutcome } from '../protocol/tools.js';
+import type { PlanSuccess, SubagentStatus, SwitchModeSuccess, ToolName, ToolOutcome } from '../protocol/tools.js';
+import { isSafeCommand } from '../permissions/policy.js';
 
 const EVENT_BUFFER_LIMIT = 10_000;
 const MUTATING_TOOLS = new Set(['write_file', 'str_replace', 'edit_file', 'delete_file']);
 const CHECKPOINT_PRUNE_KEEP = 50;
+
+/**
+ * Tools blocked in plan mode. Plan mode is read-only research: file mutation,
+ * shell execution, and delegation are refused so the plan can be reviewed first.
+ */
+const PLAN_MODE_BLOCKED = new Set<string>([
+  'write_file',
+  'str_replace',
+  'edit_file',
+  'delete_file',
+  'write_shell_stdin',
+  'task',
+  'mcp',
+  'index',
+]);
+
+function planModeRefusal(call: ToolCallInternal): string | null {
+  if (PLAN_MODE_BLOCKED.has(call.name)) return `${call.name} is disabled in plan mode`;
+  if (call.name === 'run_terminal_cmd') {
+    const args = call.args as Record<string, unknown> | null;
+    const command = args && typeof args['command'] === 'string' ? args['command'] : '';
+    if (!isSafeCommand(command)) return 'only read-only commands are allowed in plan mode';
+  }
+  return null;
+}
 
 interface ToolCallInternal extends ModelToolCallRecord {
   name: string;
@@ -65,11 +92,24 @@ function createEventQueue(): {
   };
 }
 
-function buildSystemPrompt(cwd: string, tools: string[]): string {
-  return [
+function buildSystemPrompt(cwd: string, tools: string[], mode: SessionMode): string {
+  const lines = [
     'You are opencursor, a desktop coding agent.',
     `Workspace root: ${cwd}`,
     `Available tools: ${tools.join(', ')}.`,
+  ];
+  if (mode === 'plan') {
+    lines.push(
+      'You are in PLAN MODE — read-only research. File mutation, shell execution, delegation, and MCP are disabled.',
+      'Investigate the codebase, then present a plan with create_plan (markdown body + todos) and call switch_mode to "agent" when the user is ready to execute.',
+    );
+  } else {
+    lines.push(
+      'You are in AGENT MODE — you may edit files and run commands (subject to approval).',
+      'Call switch_mode to "plan" when the user wants research or a plan before changes.',
+    );
+  }
+  lines.push(
     'Rules:',
     '- Make minimal, focused edits. Prefer str_replace for targeted changes and edit_file for rewrites.',
     '- Prefer grep_search/file_search/list_dir over shell equivalents.',
@@ -77,7 +117,8 @@ function buildSystemPrompt(cwd: string, tools: string[]): string {
     '- Use create_plan before large ambiguous tasks.',
     '- Read files before modifying them.',
     '- Keep responses concise; show code and diffs rather than prose.',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function summarizeCall(_tool: string, args: unknown): string {
@@ -122,6 +163,9 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
   let running = false;
   const plans = new Map<string, PlanSuccess>();
 
+  if (state.mode !== 'agent' && state.mode !== 'plan') state.mode = 'agent';
+  let mode: SessionMode = state.mode;
+
   const persist = async (): Promise<void> => {
     if (!state) return;
     await config.store.save(state);
@@ -161,6 +205,18 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
     },
   };
 
+  const modeAccessor = {
+    get(): SessionMode {
+      return mode;
+    },
+    set(next: SessionMode, explanation?: string): SwitchModeSuccess {
+      mode = next;
+      if (state) state.mode = next;
+      void pushEvent({ type: 'mode-changed', mode: next, explanation });
+      return explanation === undefined ? { mode: next } : { mode: next, explanation };
+    },
+  };
+
   const makeContext = (
     signal: AbortSignal,
     onProgress: (channel: 'stdout' | 'stderr' | 'note', chunk: string) => void,
@@ -175,6 +231,7 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
     subagents,
     todos: todoAccessor,
     plans: planAccessor,
+    mode: modeAccessor,
     memory: config.memory,
     shells: config.shells,
     indexer: config.indexer,
@@ -222,6 +279,16 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
         outcome: { kind: 'error', code: 'invalid_args', message: `unknown tool: ${call.name}` },
         duration_ms: Date.now() - startedAt,
       };
+    }
+
+    if (mode === 'plan') {
+      const refusal = planModeRefusal(call);
+      if (refusal !== null) {
+        return {
+          outcome: { kind: 'rejected', reason: refusal },
+          duration_ms: Date.now() - startedAt,
+        };
+      }
     }
 
     const precheck = config.permissions.precheck({ tool: call.name, args: call.args, cwd: config.cwd });
@@ -341,6 +408,12 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
     setModelClient(client): void {
       modelClient = client;
       if (state) state.model = { provider: client.provider, id: client.id };
+    },
+
+    async setMode(next: SessionMode, explanation?: string): Promise<SwitchModeSuccess> {
+      const result = modeAccessor.set(next, explanation);
+      await persist();
+      return result;
     },
 
     abort(): void {
@@ -493,7 +566,7 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
 
           const toolDefs = config.tools.modelTools();
           const memoryDigest = config.memory?.digest?.((config.memory_options?.max_digest_chars ?? 4000)) ?? '';
-          const basePrompt = config.system_prompt ?? buildSystemPrompt(config.cwd, toolDefs.map((tool) => tool.name));
+          const basePrompt = config.system_prompt ?? buildSystemPrompt(config.cwd, toolDefs.map((tool) => tool.name), mode);
           const summaryText = state.summary && state.summary.text.length > 0
             ? `Earlier conversation summary (${state.summary.archived_message_count} messages archived):\n${state.summary.text}`
             : '';
@@ -572,6 +645,30 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
             results.push({ call_id: call.id, name: call.name, outcome });
             if (call.name === 'update_todos' || call.name === 'create_plan') {
               await pushEvent({ type: 'todos-updated', todos: [...state.todos] });
+            }
+            if (call.name === 'task' && outcome.kind === 'success') {
+              const value = outcome.value as { agent_id?: string; background?: boolean; subagent_type?: string };
+              if (value.background === true && typeof value.agent_id === 'string') {
+                const args = call.args as Record<string, unknown> | null;
+                await pushEvent({
+                  type: 'subagent-started',
+                  agent_id: value.agent_id,
+                  subagent_type: value.subagent_type ?? 'general',
+                  description: typeof args?.['description'] === 'string' ? (args['description'] as string) : 'background task',
+                });
+              }
+            }
+            if ((call.name === 'subagent_await' || call.name === 'subagent_cancel') && outcome.kind === 'success') {
+              const value = outcome.value as { agent_id?: string; subagent_type?: string; status?: string; summary?: string };
+              if (typeof value.agent_id === 'string') {
+                await pushEvent({
+                  type: 'subagent-completed',
+                  agent_id: value.agent_id,
+                  subagent_type: value.subagent_type ?? 'general',
+                  status: (value.status ?? 'completed') as SubagentStatus,
+                  ...(typeof value.summary === 'string' ? { summary: value.summary } : {}),
+                });
+              }
             }
             if (captureArtifacts && config.memory && outcome.kind === 'success') {
               const args = call.args as Record<string, unknown> | null;

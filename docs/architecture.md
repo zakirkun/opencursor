@@ -77,7 +77,16 @@ The agent loop (`runtime.ts`):
 
 `createSubagentRunner` (`subagents.ts`) runs child runtimes with allow-listed tool
 subsets (`general`, `explore`, `shell`), in-memory sessions, and isolated shell
-registries that are killed when the child finishes.
+registries that are killed when the child finishes. The same runner also supports
+detached runs: `start` returns a handle immediately, `await` resolves on
+completion (optionally bounded by a timeout), `cancel` aborts the child, and
+`list` reports handles. A stable delegating model client keeps handles alive
+across provider switches.
+
+Modes (`TASK_MODE_AGENT` / `TASK_MODE_PLAN`): `runtime.setMode` flips the session
+mode, emits `mode-changed`, and persists it. In plan mode the runtime refuses
+mutating tools, non-allowlisted shell commands, delegation, MCP, and indexing
+before the permission check runs.
 
 ### session/
 
@@ -111,6 +120,7 @@ A small HTTP server bound to `127.0.0.1` on an ephemeral port (prints
 RPC methods (see `rpc.ts`): `status`, `config.get`, `config.set`, `models.list`,
 `models.apply`, `session.list/load/new/state`,
 `chat.send/abort`, `permission.respond`, `question.respond`, `todos`,
+`mode.get/set`, `subagents.list`, `subagent.cancel`,
 `memory.list/add/forget`, `index.status/run/clear`, `mcp.status`,
 `checkpoints.list/undo`, `context.compact`, `file.read`.
 

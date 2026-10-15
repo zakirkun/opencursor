@@ -93,6 +93,30 @@ export function TranscriptView({ items, busy }: { items: TranscriptItem[]; busy:
             );
           case 'tool':
             return <ToolCard key={item.id} call={item.call} />;
+          case 'subagent': {
+            const tone =
+              item.status === 'completed'
+                ? palette.status.ok
+                : item.status === 'running'
+                  ? palette.status.info
+                  : item.status === 'cancelled'
+                    ? palette.text.tertiary
+                    : palette.status.error;
+            return (
+              <div key={item.id} style={{ margin: '8px 0', marginLeft: 12, border: `1px solid ${palette.stroke.secondary}`, borderRadius: 8, padding: '6px 10px', background: palette.fill.tertiary }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: palette.accent.primary, fontWeight: 600, fontSize: 12 }}>subagent · {item.subagentType}</span>
+                  <span style={{ color: tone, fontSize: 11 }}>{item.status}</span>
+                  {item.description.length > 0 ? (
+                    <span style={{ color: palette.text.tertiary, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.description}</span>
+                  ) : null}
+                </div>
+                {item.summary ? (
+                  <div style={{ color: palette.text.secondary, fontSize: 12, marginTop: 4, whiteSpace: 'pre-wrap' }}>{item.summary.slice(0, 600)}</div>
+                ) : null}
+              </div>
+            );
+          }
           case 'notice': {
             const color = item.tone === 'error' ? palette.status.error : item.tone === 'warn' ? palette.status.warn : palette.text.tertiary;
             return (

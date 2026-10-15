@@ -2,7 +2,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   model_provider TEXT NOT NULL,
   model_id TEXT NOT NULL,
   usage_json TEXT NOT NULL DEFAULT '{}',
-  summary_json TEXT
+  summary_json TEXT,
+  mode TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +118,9 @@ function migrate(db: DatabaseSync): void {
   const columns = db.prepare("PRAGMA table_info('sessions')").all() as unknown as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'summary_json')) {
     db.exec('ALTER TABLE sessions ADD COLUMN summary_json TEXT');
+  }
+  if (!columns.some((column) => column.name === 'mode')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN mode TEXT');
   }
 }
 

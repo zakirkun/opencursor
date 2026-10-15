@@ -10,6 +10,7 @@ import type {
   OpenCursorConfig,
   PermissionDecision,
   SessionStore,
+  SubagentRunner,
   ToolRegistry,
   ModelClient,
 } from '@opencursor/core';
@@ -41,11 +42,15 @@ export interface ServerContext {
   mcp: McpManager;
   indexer: Indexer;
   tools: ToolRegistry;
+  subagents: SubagentRunner;
   getModelClient: () => ModelClient | null;
   modelStatus: () => { configured: boolean; provider: string | null; model: string | null; reason?: string };
   applyModelConfig: () => Promise<void>;
   getRuntime: () => AgentRuntime | null;
   createRuntime: (sessionId?: string) => Promise<AgentRuntime>;
+  /** Mode chosen before a session existed; applied on runtime creation. */
+  getPendingMode: () => 'agent' | 'plan' | null;
+  setPendingMode: (mode: 'agent' | 'plan' | null) => void;
   pumpEvents: (runtime: AgentRuntime) => void;
   broadcast: (message: unknown) => void;
   pendingPermissions: Map<string, PendingPermission>;

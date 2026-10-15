@@ -5,6 +5,12 @@
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 
+/**
+ * Session mode — mirrors the observed `TASK_MODE_AGENT` / `TASK_MODE_PLAN`.
+ * Plan mode is read-only: it researches and produces a plan without editing.
+ */
+export type SessionMode = 'agent' | 'plan';
+
 export interface TodoItem {
   id: string;
   content: string;
@@ -71,6 +77,7 @@ export interface SessionState {
   updated_at: string;
   cwd: string;
   model: { provider: string; id: string };
+  mode?: SessionMode;
   messages: Message[];
   todos: TodoItem[];
   usage: TokenUsage;

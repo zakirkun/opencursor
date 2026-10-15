@@ -11,12 +11,16 @@ import type {
   PlanSuccess,
   Question,
   QuestionAnswer,
+  SubagentAwaitSuccess,
+  SubagentCancelSuccess,
+  SubagentStatus,
+  SwitchModeSuccess,
   ToolCall,
   ToolName,
   ToolOutcome,
   ToolResultValues,
 } from './protocol/tools.js';
-import type { SessionState, TodoItem, TurnSummary, CheckpointInfo } from './protocol/session.js';
+import type { SessionMode, SessionState, TodoItem, TurnSummary, CheckpointInfo } from './protocol/session.js';
 import type { ModelClient, ModelConfig } from './protocol/models.js';
 import type { HookRunner } from './hooks/runner.js';
 import type { ShellRegistry } from './shells/registry.js';
@@ -73,6 +77,7 @@ export interface ToolContext {
   subagents?: SubagentRunner;
   todos?: TodoAccessor;
   plans?: PlanAccessor;
+  mode?: ModeAccessor;
   memory?: MemoryAccessor;
   shells?: ShellRegistry;
   indexer?: IndexerAccessor;
@@ -155,12 +160,39 @@ export interface SubagentProfile {
   max_iterations?: number;
 }
 
+export interface SubagentHandle {
+  agent_id: string;
+  subagent_type: string;
+  description: string;
+  status: SubagentStatus;
+  summary?: string;
+  started_at: string;
+  ended_at?: string;
+}
+
 export interface SubagentRunner {
   run(
     profile: SubagentProfile,
     prompt: string,
     ctx: { cwd: string; signal: AbortSignal; parent_session_id: string },
   ): Promise<ToolOutcome<SubagentRunResult>>;
+  /** Start a detached run and return its handle immediately. */
+  start(
+    profile: SubagentProfile,
+    prompt: string,
+    ctx: { cwd: string; parent_session_id: string; description: string },
+  ): SubagentHandle;
+  /** Wait for a detached run to finish (bounded by timeout_ms when given). */
+  await(agentId: string, timeoutMs?: number): Promise<SubagentAwaitSuccess>;
+  /** Cancel a detached run. */
+  cancel(agentId: string, reason?: string): SubagentCancelSuccess;
+  /** Handles for detached runs started in this process (newest first). */
+  list(): SubagentHandle[];
+}
+
+export interface ModeAccessor {
+  get(): SessionMode;
+  set(mode: SessionMode, explanation?: string): SwitchModeSuccess;
 }
 
 /* ------------------------------------------------------------------ *
@@ -210,6 +242,8 @@ export interface AgentRuntime {
   abort(): void;
   /** Swap the model client (provider switch mid-session). */
   setModelClient(client: ModelClient): void;
+  /** Switch between agent and plan mode; emits a mode-changed event. */
+  setMode(mode: SessionMode, explanation?: string): Promise<SwitchModeSuccess>;
   /** Restore files from the most recent checkpoint for each path (optionally all session checkpoints). */
   undo(opts?: { all?: boolean }): Promise<string[]>;
   /** Compact the conversation: archive messages, keep a summary + recent tail. */
