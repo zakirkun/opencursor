@@ -4,6 +4,8 @@ import path from 'node:path';
 import { readFile, stat } from 'node:fs/promises';
 import type { ServerContext, RpcRequest } from './types.js';
 import type { PermissionDecision } from '@opencursor/core';
+import { listModelsWithPrices, buildModelConfig, redactConfig, pickProvider } from '@opencursor/core';
+import type { ModelProvider } from '@opencursor/core';
 
 function asString(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -21,10 +23,13 @@ export async function handleRpc(ctx: ServerContext, request: RpcRequest): Promis
   switch (request.method) {
     case 'status': {
       const runtime = ctx.getRuntime();
+      const modelStatus = ctx.modelStatus();
       return {
         cwd: ctx.cwd,
         session_id: runtime ? runtime.session_id : null,
-        model: { provider: ctx.modelClient.provider, id: ctx.modelClient.id },
+        model: { provider: modelStatus.provider, id: modelStatus.model },
+        model_configured: modelStatus.configured,
+        model_reason: modelStatus.reason ?? null,
         mcp: ctx.mcp.servers(),
         index: ctx.indexer.stats(),
         memory_count: ctx.memory.list(1000).length,
@@ -33,6 +38,46 @@ export async function handleRpc(ctx: ServerContext, request: RpcRequest): Promis
           max_iterations: ctx.config.max_iterations,
         },
       };
+    }
+
+    case 'config.get':
+      return { config: redactConfig(ctx.config), home: ctx.home.root, config_path: ctx.home.config_path };
+
+    case 'config.set': {
+      const patch = params['patch'];
+      if (typeof patch !== 'object' || patch === null) throw new Error('patch must be an object');
+      const updated = await ctx.updateConfig(patch as Record<string, unknown>);
+      return { config: updated, model: ctx.modelStatus() };
+    }
+
+    case 'models.list': {
+      const providerParam = asOptionalString(params['provider']) as ModelProvider | undefined;
+      const settings = {
+        provider: providerParam ?? ctx.config.llm.provider,
+        model: null,
+        api_key: ctx.config.llm.api_key,
+        base_url: ctx.config.llm.base_url,
+        max_tokens: null,
+        temperature: null,
+      };
+      const provider = pickProvider(process.env, settings);
+      if (!provider) throw new Error('no provider configured; set provider and API key first');
+      const config = buildModelConfig(provider, null, process.env, settings);
+      if (!config.api_key) throw new Error(`no API key configured for ${provider}`);
+      const result = await listModelsWithPrices(config, {
+        homeRoot: ctx.home.root,
+        refreshPrices: params['refresh_prices'] === true,
+      });
+      return {
+        provider,
+        models: result.models,
+        catalog: result.catalog,
+      };
+    }
+
+    case 'models.apply': {
+      await ctx.applyModelConfig();
+      return { model: ctx.modelStatus() };
     }
 
     case 'session.list':
@@ -61,6 +106,9 @@ export async function handleRpc(ctx: ServerContext, request: RpcRequest): Promis
 
     case 'chat.send': {
       const text = asString(params['text'], 'text');
+      if (!ctx.getModelClient()) {
+        throw new Error('no LLM provider configured; open Settings to set a provider and API key');
+      }
       let runtime = ctx.getRuntime();
       if (!runtime) {
         runtime = await ctx.createRuntime();

@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AnthropicClient, toAnthropicMessages } from '../src/models/anthropic.js';
 import { OpenAIClient, toOpenAIMessages } from '../src/models/openai.js';
-import { MockModelClient } from '../src/models/mock.js';
+import { normalizeModelEntry, formatPricing } from '../src/models/listing.js';
+import { matchPrice } from '../src/models/prices.js';
+import type { PriceCatalog } from '../src/models/prices.js';
 import type { ModelStreamEvent } from '../src/protocol/models.js';
 
 function sseResponse(lines: string[]): Response {
@@ -207,45 +209,151 @@ test('openai message mapping emits tool role entries per result', () => {
   assert.equal(tool?.tool_call_id, 'c1');
 });
 
-test('mock model scripts tool calls and then summarizes results', async () => {
-  const mock = new MockModelClient();
-  const first: ModelStreamEvent[] = [];
-  for await (const event of mock.generate({ messages: [{ role: 'user', text: 'list files' }], tools: [] })) {
-    first.push(event);
-  }
-  const call = first.find((event) => event.type === 'tool-call');
-  assert.ok(call && call.type === 'tool-call');
-  assert.equal(call.call.name, 'list_dir');
+test('normalizeModelEntry parses pricing shapes and metadata', () => {
+  const openrouter = normalizeModelEntry({
+    id: 'vendor/model-x',
+    name: 'Model X',
+    pricing: { prompt: '0.000003', completion: '0.000015' },
+    context_length: 128000,
+  });
+  assert.ok(openrouter);
+  assert.equal(openrouter.id, 'vendor/model-x');
+  assert.equal(openrouter.context_length, 128000);
+  assert.ok(Math.abs((openrouter.pricing?.input_per_million ?? 0) - 3) < 0.0001);
+  assert.ok(Math.abs((openrouter.pricing?.output_per_million ?? 0) - 15) < 0.0001);
 
-  const summary: ModelStreamEvent[] = [];
-  for await (const event of mock.generate({
-    messages: [
-      { role: 'user', text: 'list files' },
-      { role: 'assistant', text: '', tool_calls: [{ id: call.call.id, name: 'list_dir', args: {} }] },
-      { role: 'tool', results: [{ call_id: call.call.id, name: 'list_dir', outcome: { kind: 'success', value: { entries: [] } } }] },
-    ],
-    tools: [],
-  })) {
-    summary.push(event);
-  }
-  const text = summary
-    .filter((event) => event.type === 'text-delta')
-    .map((event) => (event.type === 'text-delta' ? event.text : ''))
-    .join('');
-  assert.match(text, /list_dir finished/);
-  const stop = summary[summary.length - 1];
-  assert.ok(stop && stop.type === 'stop' && stop.reason === 'end_turn');
+  const direct = normalizeModelEntry({ id: 'direct-model', input_cost_per_token: 0.000002, output_cost_per_token: 0.000008 });
+  assert.ok(direct?.pricing);
+  assert.ok(Math.abs((direct.pricing.input_per_million ?? 0) - 2) < 0.0001);
+
+  const plain = normalizeModelEntry({ id: 'plain-model' });
+  assert.ok(plain);
+  assert.equal(plain.pricing, undefined);
+
+  assert.equal(normalizeModelEntry({}), null);
 });
 
-test('mock model greets hello', async () => {
-  const mock = new MockModelClient();
-  const events: ModelStreamEvent[] = [];
-  for await (const event of mock.generate({ messages: [{ role: 'user', text: 'hello there' }], tools: [] })) {
-    events.push(event);
+test('formatPricing renders human-readable per-million prices', () => {
+  assert.equal(formatPricing({ input_per_million: 3, output_per_million: 15 }), '$3.00/M in · $15.00/M out');
+  assert.equal(formatPricing({ input_per_million: 0.25 }), '$0.25/M in');
+  assert.equal(formatPricing(undefined), null);
+});
+
+test('matchPrice finds catalog entries by id, name, and prefix', () => {
+  const catalog: PriceCatalog = {
+    updated_at: '2026-01-01',
+    fetched_at: new Date().toISOString(),
+    source: 'cache',
+    stale: false,
+    prices: [
+      { id: 'claude-sonnet-4-5', vendor: 'anthropic', name: 'Claude Sonnet 4.5', input: 3, output: 15, input_cached: 0.3 },
+      { id: 'gpt-5', vendor: 'openai', name: 'GPT-5', input: 1.25, output: 10, input_cached: null },
+    ],
+  };
+
+  const exact = matchPrice(catalog, 'claude-sonnet-4-5');
+  assert.ok(exact);
+  assert.equal(exact.input_per_million, 3);
+
+  const byName = matchPrice(catalog, 'unknown-id', 'GPT-5');
+  assert.ok(byName);
+  assert.equal(byName.output_per_million, 10);
+
+  const byPrefix = matchPrice(catalog, 'gpt-5-turbo-preview');
+  assert.ok(byPrefix);
+  assert.equal(byPrefix.input_per_million, 1.25);
+
+  assert.equal(matchPrice(catalog, 'totally-unrelated-model'), undefined);
+  assert.equal(matchPrice(null, 'claude-sonnet-4-5'), undefined);
+});
+
+test('openai client lists models and prices from a live stub endpoint', async () => {
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          data: [
+            { id: 'z-model', created: 1700000000 },
+            { id: 'a-model', pricing: { prompt: '0.000001', completion: '0.000002' } },
+          ],
+        }),
+      );
+      return;
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const client = new OpenAIClient({
+      provider: 'openai',
+      id: 'unused',
+      api_key: 'stub-key',
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+    });
+    const models = await client.listModels();
+    assert.deepEqual(models.map((model) => model.id), ['a-model', 'z-model']);
+    const priced = models.find((model) => model.id === 'a-model');
+    assert.ok(priced?.pricing);
+    assert.ok(Math.abs((priced.pricing.input_per_million ?? 0) - 1) < 0.0001);
+    assert.ok(Math.abs((priced.pricing.output_per_million ?? 0) - 2) < 0.0001);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  const text = events
-    .filter((event) => event.type === 'text-delta')
-    .map((event) => (event.type === 'text-delta' ? event.text : ''))
-    .join('');
-  assert.match(text, /hello/i);
+});
+
+test('anthropic client lists models from a live stub endpoint', async () => {
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith('/v1/models')) {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [{ id: 'claude-test-1', display_name: 'Claude Test' }] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const client = new AnthropicClient({
+      provider: 'anthropic',
+      id: 'unused',
+      api_key: 'stub-key',
+      base_url: `http://127.0.0.1:${address.port}`,
+    });
+    const models = await client.listModels();
+    assert.equal(models.length, 1);
+    assert.equal(models[0]?.id, 'claude-test-1');
+    assert.equal(models[0]?.display_name, 'Claude Test');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('openai client surfaces provider errors from the models endpoint', async () => {
+  const { createServer } = await import('node:http');
+  const server = createServer((_req, res) => {
+    res.statusCode = 401;
+    res.end(JSON.stringify({ error: { message: 'invalid key' } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const client = new OpenAIClient({
+      provider: 'openai',
+      id: 'unused',
+      api_key: 'bad',
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+    });
+    await assert.rejects(() => client.listModels(), /401/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

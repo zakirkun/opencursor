@@ -41,7 +41,9 @@ export interface ServerContext {
   mcp: McpManager;
   indexer: Indexer;
   tools: ToolRegistry;
-  modelClient: ModelClient;
+  getModelClient: () => ModelClient | null;
+  modelStatus: () => { configured: boolean; provider: string | null; model: string | null; reason?: string };
+  applyModelConfig: () => Promise<void>;
   getRuntime: () => AgentRuntime | null;
   createRuntime: (sessionId?: string) => Promise<AgentRuntime>;
   pumpEvents: (runtime: AgentRuntime) => void;
@@ -49,4 +51,6 @@ export interface ServerContext {
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
   sseClientCount: () => number;
+  updateConfig: (patch: Record<string, unknown>) => Promise<OpenCursorConfig>;
+  reloadConfig: () => OpenCursorConfig;
 }

@@ -1,4 +1,4 @@
-/** Hook runner + runtime integration tests — fake hook scripts, no network. */
+﻿/** Hook runner + runtime integration tests â€” fake hook scripts, no network. */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -131,7 +131,7 @@ interface ScriptStep {
 }
 
 class ScriptedModel implements ModelClient {
-  readonly provider = 'mock' as const;
+  readonly provider = 'openai' as const;
   readonly id = 'scripted';
   constructor(private readonly steps: ScriptStep[]) {}
   async *generate(_request: ModelRequest): AsyncIterable<ModelStreamEvent> {

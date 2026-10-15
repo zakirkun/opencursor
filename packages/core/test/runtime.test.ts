@@ -1,4 +1,4 @@
-/** Runtime + session tests — loop, permissions, persistence, abort, subagents. */
+﻿/** Runtime + session tests â€” loop, permissions, persistence, abort, subagents. */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,7 +23,7 @@ interface ScriptStep {
 }
 
 class ScriptedModel implements ModelClient {
-  readonly provider = 'mock' as const;
+  readonly provider = 'openai' as const;
   readonly id = 'scripted';
   requests: ModelRequest[] = [];
   constructor(private readonly steps: ScriptStep[]) {}
@@ -263,7 +263,7 @@ test('abort mid-turn produces aborted summary', async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'opencursor-rt-'));
   try {
     const model: ModelClient = {
-      provider: 'mock',
+      provider: 'openai',
       id: 'slow',
       async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
         await new Promise<void>((resolve, reject) => {
@@ -315,7 +315,7 @@ test('session store round-trip lists sessions by recency', async () => {
     const base = {
       version: 1 as const,
       cwd: dir,
-      model: { provider: 'mock', id: 'm' },
+      model: { provider: 'openai', id: 'm' },
       messages: [],
       todos: [],
       usage: { input_tokens: 0, output_tokens: 0 },

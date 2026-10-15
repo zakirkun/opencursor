@@ -1,8 +1,9 @@
 /** OpenAI Chat Completions streaming client (also works with OpenAI-compatible endpoints). */
 
-import type { ModelClient, ModelConfig, ModelRequest, ModelStreamEvent } from '../protocol/models.js';
+import type { ModelClient, ModelConfig, ModelInfo, ModelRequest, ModelStreamEvent } from '../protocol/models.js';
 import type { ModelToolCall } from '../protocol/session.js';
 import { iterateFetchSSE } from './sse.js';
+import { normalizeModelEntry } from './listing.js';
 
 interface NormalizedAssistant {
   role: 'assistant';
@@ -81,10 +82,37 @@ export class OpenAIClient implements ModelClient {
     this.id = config.id;
   }
 
-  async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
-    const base = (this.config.base_url ?? process.env['OPENAI_BASE_URL'] ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+  private baseUrl(): string {
+    return (this.config.base_url ?? process.env['OPENAI_BASE_URL'] ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+  }
+
+  private apiKey(): string {
     const apiKey = this.config.api_key ?? process.env['OPENAI_API_KEY'];
     if (!apiKey) throw new Error('openai: OPENAI_API_KEY is not set');
+    return apiKey;
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    const response = await fetch(`${this.baseUrl()}/models`, {
+      headers: { authorization: `Bearer ${this.apiKey()}` },
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`openai: models request failed: ${response.status} ${detail.slice(0, 300)}`);
+    }
+    const payload = (await response.json()) as { data?: Array<Record<string, unknown>> };
+    const models: ModelInfo[] = [];
+    for (const entry of payload.data ?? []) {
+      const normalized = normalizeModelEntry(entry);
+      if (normalized) models.push(normalized);
+    }
+    models.sort((a, b) => a.id.localeCompare(b.id));
+    return models;
+  }
+
+  async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const base = this.baseUrl();
+    const apiKey = this.apiKey();
 
     const body = {
       model: this.id,

@@ -17,15 +17,17 @@ import {
   createMcpManager,
   createHookRunner,
   createDefaultIndexer,
-  detectModelConfig,
+  resolveModelConfig,
   openDatabase,
   closeDatabase,
   resolveHomebase,
   ensureHomebase,
   loadConfig,
+  updateConfig,
+  redactConfig,
   SUBAGENT_PROFILES,
 } from '@opencursor/core';
-import type { AgentRuntime, PermissionDecision } from '@opencursor/core';
+import type { AgentRuntime, ModelClient, OpenCursorConfig, PermissionDecision } from '@opencursor/core';
 import type { ServerContext, RpcRequest } from './types.js';
 import { handleRpc } from './rpc.js';
 
@@ -84,8 +86,6 @@ async function main(): Promise<void> {
   ensureHomebase(home);
   const { config } = loadConfig(home);
   const db = openDatabase(home.db_path);
-  const modelConfig = detectModelConfig(undefined, { provider: config.provider, model: config.model });
-  const modelClient = createModelClient(modelConfig);
   const store = createSqliteSessionStore(db);
   const memory = createMemoryStore(db, home);
   const mcp = createMcpManager(config.mcp_servers);
@@ -93,16 +93,42 @@ async function main(): Promise<void> {
   const shells = createShellRegistry();
   const checkpoints = createCheckpointStore(db);
   const archives = createArchiveStore(db);
-  const indexer = createDefaultIndexer({ cwd, db });
+  const indexer = createDefaultIndexer({ cwd, db, embeddings: config.llm.embeddings });
   const tools = createBuiltinRegistry({ mcp });
   const permissions = createPermissionPolicy({
     mode: config.permission_mode,
     persist_path: `${home.root}/permissions.json`,
   });
-  const subagents = createSubagentRunner({ model_client: modelClient, tools });
 
+  let modelClient: ModelClient | null = null;
+  let modelReason: string | undefined;
   let runtime: AgentRuntime | null = null;
   let runtimeEventsPump: Promise<void> | null = null;
+
+  const applyModelConfig = async (): Promise<void> => {
+    const resolved = await resolveModelConfig(undefined, config.llm);
+    if (!resolved.config) {
+      modelClient = null;
+      modelReason = resolved.reason;
+      return;
+    }
+    modelClient = createModelClient(resolved.config);
+    modelReason = undefined;
+    if (runtime) runtime.setModelClient(modelClient);
+  };
+  await applyModelConfig();
+
+  const requireModelClient = (): ModelClient => {
+    if (!modelClient) {
+      throw new Error(modelReason ?? 'no LLM provider configured');
+    }
+    return modelClient;
+  };
+
+  const subagents = {
+    run: (...args: Parameters<ReturnType<typeof createSubagentRunner>['run']>) =>
+      createSubagentRunner({ model_client: requireModelClient(), tools }).run(...args),
+  };
 
   const sseClients = new Set<ServerResponse>();
   const pendingPermissions = new Map<
@@ -128,7 +154,7 @@ async function main(): Promise<void> {
   const createRuntime = async (sessionId?: string): Promise<AgentRuntime> => {
     const created = await createAgentRuntime({
       cwd,
-      model_client: modelClient,
+      model_client: requireModelClient(),
       tools,
       store,
       permissions,
@@ -194,7 +220,14 @@ async function main(): Promise<void> {
     mcp,
     indexer,
     tools,
-    modelClient,
+    getModelClient: () => modelClient,
+    modelStatus: () => ({
+      configured: modelClient !== null,
+      provider: modelClient ? modelClient.provider : (config.llm.provider ?? null),
+      model: modelClient ? modelClient.id : (config.llm.model ?? null),
+      ...(modelReason ? { reason: modelReason } : {}),
+    }),
+    applyModelConfig,
     getRuntime: () => runtime,
     createRuntime,
     pumpEvents,
@@ -202,6 +235,17 @@ async function main(): Promise<void> {
     pendingPermissions,
     pendingQuestions,
     sseClientCount: () => sseClients.size,
+    updateConfig: async (patch: Record<string, unknown>): Promise<OpenCursorConfig> => {
+      const merged = updateConfig(home, config, patch as Partial<OpenCursorConfig>);
+      Object.assign(config, merged);
+      await applyModelConfig();
+      return redactConfig(merged);
+    },
+    reloadConfig: (): OpenCursorConfig => {
+      const { config: reloaded } = loadConfig(home);
+      Object.assign(config, reloaded);
+      return redactConfig(reloaded);
+    },
   };
 
   const server = createServer((req, res) => {

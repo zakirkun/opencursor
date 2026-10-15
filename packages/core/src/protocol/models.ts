@@ -7,7 +7,7 @@
 import type { ModelToolCall, TokenUsage } from './session.js';
 import type { ModelToolDef } from './tools.js';
 
-export type ModelProvider = 'anthropic' | 'openai' | 'mock';
+export type ModelProvider = 'anthropic' | 'openai';
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -18,11 +18,21 @@ export interface ModelConfig {
   temperature?: number;
 }
 
-export const DEFAULT_MODELS: Record<ModelProvider, string> = {
-  anthropic: 'claude-sonnet-4-5',
-  openai: 'gpt-5.2',
-  mock: 'mock-1',
-};
+export interface ModelPricing {
+  /** USD per million input tokens, when the provider reports pricing. */
+  input_per_million?: number;
+  /** USD per million output tokens, when the provider reports pricing. */
+  output_per_million?: number;
+  currency?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  display_name?: string;
+  created_at?: string;
+  context_length?: number;
+  pricing?: ModelPricing;
+}
 
 export type ModelStreamEvent =
   | { type: 'text-delta'; text: string }
@@ -49,4 +59,6 @@ export interface ModelClient {
   readonly id: string;
   /** Stream a single completion. Implementations must be abort-safe. */
   generate(request: ModelRequest): AsyncIterable<ModelStreamEvent>;
+  /** List models available to the configured credentials. */
+  listModels(): Promise<ModelInfo[]>;
 }

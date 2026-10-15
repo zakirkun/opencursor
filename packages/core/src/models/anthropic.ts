@@ -1,8 +1,9 @@
 /** Anthropic Messages API streaming client. */
 
-import type { ModelClient, ModelConfig, ModelRequest, ModelStreamEvent } from '../protocol/models.js';
+import type { ModelClient, ModelConfig, ModelInfo, ModelRequest, ModelStreamEvent } from '../protocol/models.js';
 import type { ModelToolCall } from '../protocol/session.js';
 import { iterateFetchSSE } from './sse.js';
+import { normalizeModelEntry } from './listing.js';
 
 interface AnthropicContentBlock {
   type: string;
@@ -88,10 +89,41 @@ export class AnthropicClient implements ModelClient {
     this.id = config.id;
   }
 
-  async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
-    const base = (this.config.base_url ?? process.env['ANTHROPIC_BASE_URL'] ?? 'https://api.anthropic.com').replace(/\/$/, '');
+  private baseUrl(): string {
+    return (this.config.base_url ?? process.env['ANTHROPIC_BASE_URL'] ?? 'https://api.anthropic.com').replace(/\/$/, '');
+  }
+
+  private apiKey(): string {
     const apiKey = this.config.api_key ?? process.env['ANTHROPIC_API_KEY'];
     if (!apiKey) throw new Error('anthropic: ANTHROPIC_API_KEY is not set');
+    return apiKey;
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    const response = await fetch(`${this.baseUrl()}/v1/models?limit=100`, {
+      headers: {
+        'x-api-key': this.apiKey(),
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`anthropic: models request failed: ${response.status} ${detail.slice(0, 300)}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<Record<string, unknown>>;
+    };
+    const models: ModelInfo[] = [];
+    for (const entry of payload.data ?? []) {
+      const normalized = normalizeModelEntry(entry);
+      if (normalized) models.push(normalized);
+    }
+    return models;
+  }
+
+  async *generate(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const base = this.baseUrl();
+    const apiKey = this.apiKey();
 
     const body = {
       model: this.id,

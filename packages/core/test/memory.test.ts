@@ -1,4 +1,4 @@
-/** Homebase + SQLite + memory store tests. */
+﻿/** Homebase + SQLite + memory store tests. */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,11 +37,11 @@ test('loadConfig creates defaults on first run and round-trips edits', async () 
     assert.deepEqual(first.config, DEFAULT_CONFIG);
     assert.equal(existsSync(home.config_path), true);
 
-    const edited = { ...first.config, provider: 'mock' as const, max_iterations: 7 };
+    const edited = { ...first.config, provider: 'openai' as const, max_iterations: 7 };
     saveConfig(home, edited);
     const second = loadConfig(home);
     assert.equal(second.created, false);
-    assert.equal(second.config.provider, 'mock');
+    assert.equal(second.config.provider, 'openai');
     assert.equal(second.config.max_iterations, 7);
     assert.equal(second.config.memory.auto_summarize, true);
   } finally {
@@ -204,7 +204,7 @@ test('sqlite session store round-trips state, todos, and ops', async () => {
       created_at: '2026-01-01T00:00:00.000Z',
       updated_at: '2026-01-01T00:00:00.000Z',
       cwd: home.root,
-      model: { provider: 'mock', id: 'mock-1' },
+      model: { provider: 'openai', id: 'gpt-test' },
       messages: [
         { role: 'user', text: 'hello', timestamp: '2026-01-01T00:00:01.000Z' },
         {
@@ -225,7 +225,7 @@ test('sqlite session store round-trips state, todos, and ops', async () => {
     assert.equal(loaded.messages.length, 2);
     assert.equal(loaded.todos.length, 1);
     assert.deepEqual(loaded.usage, { input_tokens: 3, output_tokens: 4 });
-    assert.equal(loaded.model.provider, 'mock');
+    assert.equal(loaded.model.provider, 'openai');
 
     assert.equal(await store.latestId(), 'sess-a');
     const listing = await store.list();
