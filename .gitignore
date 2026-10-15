@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.opencursor/
+apps/desktop/node_modules/
+apps/desktop/src-tauri/target/
+.DS_Store
+*.log

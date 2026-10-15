@@ -1,0 +1,30 @@
+{
+  "name": "opencursor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop coding agent — clean-room implementation of observable agent protocols (tool-call unions, exec loops, permission gating, session state).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/core packages/server",
+    "typecheck": "tsc -b packages/core packages/server --pretty false",
+    "lint": "eslint .",
+    "test": "node --no-warnings --import tsx --test packages/core/test/tools.test.ts packages/core/test/models.test.ts packages/core/test/sse.test.ts packages/core/test/runtime.test.ts packages/core/test/permission.test.ts packages/core/test/memory.test.ts packages/core/test/mcp.test.ts packages/core/test/hooks.test.ts packages/core/test/context.test.ts packages/core/test/index.test.ts packages/server/test/rpc.test.ts",
+    "desktop": "npm --prefix apps/desktop run tauri:dev",
+    "desktop:server": "node packages/server/dist/main.js",
+    "smoke": "node packages/server/dist/main.js --port 4180"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "eslint": "^10.12.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.71.2"
+  }
+}
